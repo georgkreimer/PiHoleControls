@@ -87,6 +87,14 @@ final class PiHoleStore: ObservableObject {
         if showLoading { isLoading = false }
     }
 
+    func toggleBlocking() {
+        if isBlockingEnabled == true {
+            disableBlocking(durationSeconds: nil)
+        } else {
+            enableBlocking()
+        }
+    }
+
     func enableBlocking() {
         guard let client = client else {
             lastError = "Pi-hole not configured"

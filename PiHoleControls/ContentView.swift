@@ -62,13 +62,6 @@ struct ContentView: View {
             }
         }
         .padding(8)
-        .onAppear {
-            store.refreshStatus()
-            store.startAutoRefresh()
-        }
-        .onDisappear {
-            store.stopAutoRefresh()
-        }
     }
 
     private var statusText: String {
