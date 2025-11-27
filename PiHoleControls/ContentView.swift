@@ -8,9 +8,12 @@
 import SwiftUI
 import AppKit
 
+@MainActor
 struct ContentView: View {
     @EnvironmentObject var store: PiHoleStore
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.dismissMenu) private var dismissMenu
+    @State private var selectedDisableOption: DisableOption = .minutes(5)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -38,15 +41,24 @@ struct ContentView: View {
                     store.enableBlocking()
                 }
                 .disabled(store.isLoading)
-            } else {
-                Menu("Disable blocking") {
-                    Button("5 minutes") { store.disableBlocking(durationSeconds: 5 * 60) }
-                    Button("30 minutes") { store.disableBlocking(durationSeconds: 30 * 60) }
-                    Button("1 hour") { store.disableBlocking(durationSeconds: 60 * 60) }
-                    Divider()
-                    Button("Until re-enabled") { store.disableBlocking(durationSeconds: nil) }
+            } else if store.isBlockingEnabled == true {
+                VStack(alignment: .leading, spacing: 6) {
+                    Picker("Disable for", selection: $selectedDisableOption) {
+                        ForEach(DisableOption.allCases, id: \.self) { option in
+                            Text(option.label).tag(option)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    Button("Disable") {
+                        store.disableBlocking(durationSeconds: selectedDisableOption.durationSeconds)
+                        dismissMenu?()
+                    }
+                    .disabled(store.isLoading)
                 }
-                .disabled(store.isLoading)
+            } else {
+                Text("Status unknown")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Divider()
@@ -66,9 +78,6 @@ struct ContentView: View {
 
     private var statusText: String {
         guard let enabled = store.isBlockingEnabled else { return "Unknown status" }
-        if !enabled, let remaining = store.remainingFormatted {
-            return "Blocking: Disabled (\(remaining))"
-        }
         return enabled ? "Blocking: Enabled" : "Blocking: Disabled"
     }
 
@@ -76,10 +85,32 @@ struct ContentView: View {
         guard let enabled = store.isBlockingEnabled else { return .gray }
         return enabled ? .green : .orange
     }
-
 }
 
 #Preview {
     ContentView()
         .environmentObject(PiHoleStore())
+}
+
+private enum DisableOption: Hashable, CaseIterable {
+    case minutes(Int)
+    case untilReenabled
+
+    var label: String {
+        switch self {
+        case .minutes(let m): return "\(m) minutes"
+        case .untilReenabled: return "Until re-enabled"
+        }
+    }
+
+    var durationSeconds: Int? {
+        switch self {
+        case .minutes(let m): return m * 60
+        case .untilReenabled: return nil
+        }
+    }
+
+    static var allCases: [DisableOption] {
+        [.minutes(5), .minutes(30), .minutes(60), .untilReenabled]
+    }
 }

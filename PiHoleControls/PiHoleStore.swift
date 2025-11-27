@@ -35,9 +35,9 @@ final class PiHoleStore: ObservableObject {
 
     var menuBarTitle: String {
         if let remaining = remainingFormatted, isBlockingEnabled == false {
-            return "Pi-hole (\(remaining))"
+            return "(\(remaining))"
         }
-        return "Pi-hole"
+        return ""
     }
 
     var remainingFormatted: String? {

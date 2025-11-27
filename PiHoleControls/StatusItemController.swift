@@ -16,13 +16,21 @@ final class StatusItemController {
     private let popover: NSPopover
     private let store: PiHoleStore
     private var cancellables = Set<AnyCancellable>()
+    private var disableAfterAction: (() -> Void)?
 
     init(store: PiHoleStore) {
         self.store = store
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         self.popover = NSPopover()
         self.popover.behavior = .transient
-        self.popover.contentViewController = NSHostingController(rootView: ContentView().environmentObject(store))
+        // Inject a callback so menu actions can close the popover.
+        self.disableAfterAction = { [weak popover] in
+            popover?.performClose(nil)
+        }
+        let contentView = ContentView()
+            .environmentObject(store)
+            .environment(\.dismissMenu, { [weak self] in self?.disableAfterAction?() })
+        self.popover.contentViewController = NSHostingController(rootView: contentView)
 
         if let button = statusItem.button {
             button.target = self
