@@ -33,26 +33,23 @@ struct ContentView: View {
 
             Divider()
 
-            Button("Enable blocking") {
-                store.enableBlocking()
+            if store.isBlockingEnabled == false {
+                Button("Enable blocking") {
+                    store.enableBlocking()
+                }
+                .disabled(store.isLoading)
+            } else {
+                Menu("Disable blocking") {
+                    Button("5 minutes") { store.disableBlocking(durationSeconds: 5 * 60) }
+                    Button("30 minutes") { store.disableBlocking(durationSeconds: 30 * 60) }
+                    Button("1 hour") { store.disableBlocking(durationSeconds: 60 * 60) }
+                    Divider()
+                    Button("Until re-enabled") { store.disableBlocking(durationSeconds: nil) }
+                }
+                .disabled(store.isLoading)
             }
-            .disabled(store.isLoading)
-
-            Menu("Disable blocking") {
-                Button("5 minutes") { store.disableBlocking(durationSeconds: 5 * 60) }
-                Button("30 minutes") { store.disableBlocking(durationSeconds: 30 * 60) }
-                Button("1 hour") { store.disableBlocking(durationSeconds: 60 * 60) }
-                Divider()
-                Button("Until re-enabled") { store.disableBlocking(durationSeconds: nil) }
-            }
-            .disabled(store.isLoading)
 
             Divider()
-
-            Button("Refresh status") {
-                store.refreshStatus()
-            }
-            .disabled(store.isLoading)
 
             Button("Settings…") {
                 openSettings()
