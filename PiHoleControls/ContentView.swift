@@ -65,11 +65,20 @@ struct ContentView: View {
             }
         }
         .padding(8)
-        .onAppear { store.refreshStatus() }
+        .onAppear {
+            store.refreshStatus()
+            store.startAutoRefresh()
+        }
+        .onDisappear {
+            store.stopAutoRefresh()
+        }
     }
 
     private var statusText: String {
         guard let enabled = store.isBlockingEnabled else { return "Unknown status" }
+        if !enabled, let remaining = store.remainingFormatted {
+            return "Blocking: Disabled (\(remaining))"
+        }
         return enabled ? "Blocking: Enabled" : "Blocking: Disabled"
     }
 
@@ -77,6 +86,7 @@ struct ContentView: View {
         guard let enabled = store.isBlockingEnabled else { return .gray }
         return enabled ? .green : .orange
     }
+
 }
 
 #Preview {

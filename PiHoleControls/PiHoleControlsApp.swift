@@ -12,9 +12,11 @@ struct PiHoleControlsApp: App {
     @StateObject private var store = PiHoleStore()
 
     var body: some Scene {
-        MenuBarExtra("Pi-hole", systemImage: store.menuBarIconSystemName) {
+        MenuBarExtra {
             ContentView()
                 .environmentObject(store)
+        } label: {
+            Label(store.menuBarTitle, systemImage: store.menuBarIconSystemName)
         }
         .menuBarExtraStyle(.window)
 
