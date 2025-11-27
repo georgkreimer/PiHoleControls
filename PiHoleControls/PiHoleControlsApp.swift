@@ -9,9 +9,18 @@ import SwiftUI
 
 @main
 struct PiHoleControlsApp: App {
+    @StateObject private var store = PiHoleStore()
+
     var body: some Scene {
-        WindowGroup {
+        MenuBarExtra("Pi-hole", systemImage: store.menuBarIconSystemName) {
             ContentView()
+                .environmentObject(store)
+        }
+        .menuBarExtraStyle(.window)
+
+        Settings {
+            SettingsView()
+                .environmentObject(store)
         }
     }
 }

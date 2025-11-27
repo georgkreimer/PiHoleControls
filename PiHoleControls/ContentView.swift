@@ -6,19 +6,80 @@
 //
 
 import SwiftUI
+import AppKit
 
 struct ContentView: View {
+    @EnvironmentObject var store: PiHoleStore
+    @Environment(\.openSettings) private var openSettings
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Circle()
+                    .frame(width: 10, height: 10)
+                    .foregroundStyle(statusColor)
+                Text(statusText)
+                    .font(.headline)
+            }
+
+            if store.isLoading {
+                Text("Working…")
+                    .font(.caption)
+            } else if let error = store.lastError {
+                Text(error)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            Divider()
+
+            Button("Enable blocking") {
+                store.enableBlocking()
+            }
+            .disabled(store.isLoading)
+
+            Menu("Disable blocking") {
+                Button("5 minutes") { store.disableBlocking(durationSeconds: 5 * 60) }
+                Button("30 minutes") { store.disableBlocking(durationSeconds: 30 * 60) }
+                Button("1 hour") { store.disableBlocking(durationSeconds: 60 * 60) }
+                Divider()
+                Button("Until re-enabled") { store.disableBlocking(durationSeconds: nil) }
+            }
+            .disabled(store.isLoading)
+
+            Divider()
+
+            Button("Refresh status") {
+                store.refreshStatus()
+            }
+            .disabled(store.isLoading)
+
+            Button("Settings…") {
+                openSettings()
+            }
+
+            Divider()
+
+            Button("Quit PiHoleControls") {
+                NSApp.terminate(nil)
+            }
         }
-        .padding()
+        .padding(8)
+        .onAppear { store.refreshStatus() }
+    }
+
+    private var statusText: String {
+        guard let enabled = store.isBlockingEnabled else { return "Unknown status" }
+        return enabled ? "Blocking: Enabled" : "Blocking: Disabled"
+    }
+
+    private var statusColor: Color {
+        guard let enabled = store.isBlockingEnabled else { return .gray }
+        return enabled ? .green : .orange
     }
 }
 
 #Preview {
     ContentView()
+        .environmentObject(PiHoleStore())
 }
