@@ -49,9 +49,9 @@ final class StatusItemController {
             statusView.translatesAutoresizingMaskIntoConstraints = false
             let centerX = statusView.centerXAnchor.constraint(equalTo: button.centerXAnchor)
             let centerY = statusView.centerYAnchor.constraint(equalTo: button.centerYAnchor, constant: statusViewVerticalOffset)
-
-            let width = statusView.widthAnchor.constraint(equalToConstant: 0)
-            let height = statusView.heightAnchor.constraint(equalToConstant: 0)
+            let initialSize = statusView.intrinsicContentSize
+            let width = statusView.widthAnchor.constraint(equalToConstant: initialSize.width)
+            let height = statusView.heightAnchor.constraint(equalToConstant: initialSize.height)
             statusViewWidthConstraint = width
             statusViewHeightConstraint = height
 
@@ -206,7 +206,6 @@ private final class StatusItemView: NSView {
         labelHeightConstraint?.constant = max(placeholderLabelHeight, intrinsicSize.height)
         labelWidthConstraint?.constant = max(placeholderLabelWidth, intrinsicSize.width)
         invalidateIntrinsicContentSize()
-        needsLayout = true
     }
 
     override var intrinsicContentSize: NSSize {
