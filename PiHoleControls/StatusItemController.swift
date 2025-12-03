@@ -70,31 +70,28 @@ final class StatusItemController {
             let sec = remaining % 60
             return String(format: "%d:%02d", min, sec)
         }
-        statusView.update(image: statusImage(), timerText: timerText)
+        let statusImage = statusImage()
+        statusView.update(image: statusImage.image, imageAlpha: statusImage.alpha, timerText: timerText)
         let size = statusView.intrinsicContentSize
         statusView.frame = NSRect(origin: .zero, size: size)
         statusItem.length = size.width
         statusView.toolTip = title.isEmpty ? nil : title
     }
 
-    private func statusImage() -> NSImage? {
+    private func statusImage() -> (image: NSImage?, alpha: CGFloat) {
         // Keep system symbols for loading and unknown states to surface feedback.
         if store.isLoading {
-            return NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "Pi-hole")?.settingTemplate(true)
+            return (NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "Pi-hole")?.settingTemplate(true), 1)
         }
         guard let enabled = store.isBlockingEnabled else {
-            return NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: "Pi-hole")?.settingTemplate(true)
+            return (NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: "Pi-hole")?.settingTemplate(true), 1)
         }
 
-        if enabled {
-            return NSImage(named: "MenuIconActive")?
-                .trimmedToAlphaBounds()
-                .resizedForStatusBar(maxDimension: 16, template: false)
-        } else {
-            return NSImage(named: "MenuIconInactive")?
-                .trimmedToAlphaBounds()
-                .resizedForStatusBar(maxDimension: 16, template: true)
-        }
+        let baseImage = NSImage(named: "MenuIconInactive")?
+            .trimmedToAlphaBounds()
+            .resizedForStatusBar(maxDimension: 15, template: true)
+
+        return (baseImage, enabled ? 1 : 0.35)
     }
 }
 
@@ -107,7 +104,7 @@ private final class StatusItemView: NSView {
 
     private let horizontalInset: CGFloat = 4
     private let topInset: CGFloat = 2
-    private let bottomInset: CGFloat = 2
+    private let bottomInset: CGFloat = 3
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -123,9 +120,9 @@ private final class StatusItemView: NSView {
         label.lineBreakMode = .byWordWrapping
         label.textColor = .white
         let shadow = NSShadow()
-        shadow.shadowOffset = NSSize(width: 0, height: -1)
+        shadow.shadowOffset = NSSize(width: 0, height: 0)
         shadow.shadowBlurRadius = 2
-        shadow.shadowColor = NSColor.black.withAlphaComponent(0.45)
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.9)
         label.shadow = shadow
         label.setContentHuggingPriority(.required, for: .vertical)
         label.setContentCompressionResistancePriority(.required, for: .vertical)
@@ -152,8 +149,9 @@ private final class StatusItemView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func update(image: NSImage?, timerText: String?) {
+    func update(image: NSImage?, imageAlpha: CGFloat = 1, timerText: String?) {
         imageView.image = image
+        imageView.alphaValue = max(0, min(1, imageAlpha))
         label.stringValue = timerText ?? ""
         label.isHidden = (timerText ?? "").isEmpty
         invalidateIntrinsicContentSize()
@@ -249,5 +247,16 @@ private extension NSImage {
         let trimmed = NSImage(cgImage: cropped, size: NSSize(width: rect.width, height: rect.height))
         trimmed.isTemplate = self.isTemplate
         return trimmed
+    }
+
+    func withAlpha(_ alpha: CGFloat) -> NSImage {
+        let clampedAlpha = max(0, min(1, alpha))
+        let result = NSImage(size: size)
+        result.isTemplate = false
+        result.lockFocus()
+        let rect = NSRect(origin: .zero, size: size)
+        draw(in: rect, from: .zero, operation: .sourceOver, fraction: clampedAlpha)
+        result.unlockFocus()
+        return result
     }
 }
