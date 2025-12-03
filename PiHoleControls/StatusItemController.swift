@@ -34,9 +34,21 @@ final class StatusItemController {
             .environment(\.dismissMenu, { [weak self] in self?.disableAfterAction?() })
         self.popover.contentViewController = NSHostingController(rootView: contentView)
 
-        statusView.onLeftClick = { [weak self] in self?.toggleBlocking() }
-        statusView.onRightClick = { [weak self] in self?.togglePopover() }
-        statusItem.view = statusView
+        if let button = statusItem.button {
+            button.title = ""
+            button.image = nil
+            button.isBordered = false
+            if let cell = button.cell as? NSButtonCell {
+                cell.highlightsBy = []
+                cell.showsStateBy = []
+            }
+            button.target = self
+            button.action = #selector(handleStatusItemClick)
+            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.addSubview(statusView)
+            statusView.translatesAutoresizingMaskIntoConstraints = true
+            statusView.autoresizingMask = []
+        }
 
         store.$isBlockingEnabled
             .combineLatest(store.$remainingDisableSeconds, store.$isLoading)
@@ -54,11 +66,20 @@ final class StatusItemController {
         store.toggleBlocking()
     }
 
+    @objc private func handleStatusItemClick() {
+        guard let event = NSApp.currentEvent else { return }
+        if event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
+            togglePopover()
+        } else {
+            toggleBlocking()
+        }
+    }
+
     private func togglePopover() {
         if popover.isShown {
             popover.performClose(nil)
-        } else if let view = statusItem.view {
-            popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
+        } else if let button = statusItem.button {
+            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
     }
@@ -73,8 +94,11 @@ final class StatusItemController {
         let statusImage = statusImage()
         statusView.update(image: statusImage.image, imageAlpha: statusImage.alpha, timerText: timerText)
         let size = statusView.intrinsicContentSize
-        statusView.frame = NSRect(origin: .zero, size: size)
         statusItem.length = size.width
+        if let button = statusItem.button {
+            let yOffset = floor((button.bounds.height - size.height) / 2) - 2
+            statusView.frame = NSRect(x: 0, y: yOffset, width: size.width, height: size.height)
+        }
         statusView.toolTip = title.isEmpty ? nil : title
     }
 
@@ -101,6 +125,7 @@ private final class StatusItemView: NSView {
     private var labelHeightConstraint: NSLayoutConstraint?
     private var labelWidthConstraint: NSLayoutConstraint?
     private let placeholderLabelWidth: CGFloat
+    private let placeholderLabelHeight: CGFloat
 
     private let horizontalInset: CGFloat = 0
     private let topInset: CGFloat = 4
@@ -109,6 +134,7 @@ private final class StatusItemView: NSView {
     override init(frame frameRect: NSRect) {
         let placeholderSize = "00:00".size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .semibold)])
         self.placeholderLabelWidth = placeholderSize.width
+        self.placeholderLabelHeight = placeholderSize.height
         super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
 
@@ -129,7 +155,7 @@ private final class StatusItemView: NSView {
         label.setContentHuggingPriority(.required, for: .vertical)
         label.setContentCompressionResistancePriority(.required, for: .vertical)
         label.translatesAutoresizingMaskIntoConstraints = false
-        labelHeightConstraint = label.heightAnchor.constraint(equalToConstant: label.intrinsicContentSize.height)
+        labelHeightConstraint = label.heightAnchor.constraint(equalToConstant: max(placeholderLabelHeight, label.intrinsicContentSize.height))
         labelWidthConstraint = label.widthAnchor.constraint(equalToConstant: placeholderLabelWidth)
 
         addSubview(imageView)
@@ -160,6 +186,7 @@ private final class StatusItemView: NSView {
 
     required init?(coder: NSCoder) {
         self.placeholderLabelWidth = 0
+        self.placeholderLabelHeight = 0
         fatalError("init(coder:) has not been implemented")
     }
 
@@ -170,7 +197,7 @@ private final class StatusItemView: NSView {
         let hasText = !(timerText ?? "").isEmpty
         label.alphaValue = hasText ? 1 : 0
         let intrinsicSize = label.intrinsicContentSize
-        labelHeightConstraint?.constant = intrinsicSize.height
+        labelHeightConstraint?.constant = max(placeholderLabelHeight, intrinsicSize.height)
         labelWidthConstraint?.constant = max(placeholderLabelWidth, intrinsicSize.width)
         invalidateIntrinsicContentSize()
         needsLayout = true
@@ -178,7 +205,9 @@ private final class StatusItemView: NSView {
 
     override var intrinsicContentSize: NSSize {
         let imageSize = imageView.intrinsicContentSize
-        let labelSize = (label.isHidden || label.stringValue.isEmpty) ? .zero : label.intrinsicContentSize
+        let labelIntrinsic = label.intrinsicContentSize
+        let labelSize = NSSize(width: max(placeholderLabelWidth, labelIntrinsic.width),
+                               height: max(placeholderLabelHeight, labelIntrinsic.height))
         let width = max(imageSize.width, labelSize.width) + (horizontalInset * 2)
         let height = max(imageSize.height, labelSize.height) + topInset + bottomInset
         return NSSize(width: max(width, 20), height: height)
