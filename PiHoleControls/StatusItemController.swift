@@ -79,10 +79,7 @@ final class StatusItemController {
     }
 
     private func statusImage() -> (image: NSImage?, alpha: CGFloat) {
-        // Keep system symbols for loading and unknown states to surface feedback.
-        if store.isLoading {
-            return (NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "Pi-hole")?.settingTemplate(true), 1)
-        }
+        // Keep unknown state icon if we truly do not know.
         guard let enabled = store.isBlockingEnabled else {
             return (NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: "Pi-hole")?.settingTemplate(true), 1)
         }
@@ -101,12 +98,17 @@ private final class StatusItemView: NSView {
 
     private let imageView = NSImageView()
     private let label = NSTextField(labelWithString: "")
+    private var labelHeightConstraint: NSLayoutConstraint?
+    private var labelWidthConstraint: NSLayoutConstraint?
+    private let placeholderLabelWidth: CGFloat
 
-    private let horizontalInset: CGFloat = 4
-    private let topInset: CGFloat = 2
-    private let bottomInset: CGFloat = 3
+    private let horizontalInset: CGFloat = 0
+    private let topInset: CGFloat = 4
+    private let bottomInset: CGFloat = 1
 
     override init(frame frameRect: NSRect) {
+        let placeholderSize = "00:00".size(withAttributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .semibold)])
+        self.placeholderLabelWidth = placeholderSize.width
         super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
 
@@ -127,10 +129,13 @@ private final class StatusItemView: NSView {
         label.setContentHuggingPriority(.required, for: .vertical)
         label.setContentCompressionResistancePriority(.required, for: .vertical)
         label.translatesAutoresizingMaskIntoConstraints = false
+        labelHeightConstraint = label.heightAnchor.constraint(equalToConstant: label.intrinsicContentSize.height)
+        labelWidthConstraint = label.widthAnchor.constraint(equalToConstant: placeholderLabelWidth)
 
         addSubview(imageView)
         addSubview(label)
-        NSLayoutConstraint.activate([
+
+        var constraints: [NSLayoutConstraint] = [
             imageView.topAnchor.constraint(equalTo: topAnchor, constant: topInset),
             imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
             imageView.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: horizontalInset),
@@ -141,11 +146,20 @@ private final class StatusItemView: NSView {
             label.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: horizontalInset),
             label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -horizontalInset),
 
-            bottomAnchor.constraint(equalTo: imageView.bottomAnchor, constant: bottomInset)
-        ])
+            bottomAnchor.constraint(greaterThanOrEqualTo: imageView.bottomAnchor, constant: bottomInset),
+            bottomAnchor.constraint(greaterThanOrEqualTo: label.bottomAnchor, constant: bottomInset)
+        ]
+        if let labelHeightConstraint {
+            constraints.append(labelHeightConstraint)
+        }
+        if let labelWidthConstraint {
+            constraints.append(labelWidthConstraint)
+        }
+        NSLayoutConstraint.activate(constraints)
     }
 
     required init?(coder: NSCoder) {
+        self.placeholderLabelWidth = 0
         fatalError("init(coder:) has not been implemented")
     }
 
@@ -153,17 +167,21 @@ private final class StatusItemView: NSView {
         imageView.image = image
         imageView.alphaValue = max(0, min(1, imageAlpha))
         label.stringValue = timerText ?? ""
-        label.isHidden = (timerText ?? "").isEmpty
+        let hasText = !(timerText ?? "").isEmpty
+        label.alphaValue = hasText ? 1 : 0
+        let intrinsicSize = label.intrinsicContentSize
+        labelHeightConstraint?.constant = intrinsicSize.height
+        labelWidthConstraint?.constant = max(placeholderLabelWidth, intrinsicSize.width)
         invalidateIntrinsicContentSize()
         needsLayout = true
     }
 
     override var intrinsicContentSize: NSSize {
         let imageSize = imageView.intrinsicContentSize
-        let labelSize = label.intrinsicContentSize
+        let labelSize = (label.isHidden || label.stringValue.isEmpty) ? .zero : label.intrinsicContentSize
         let width = max(imageSize.width, labelSize.width) + (horizontalInset * 2)
         let height = max(imageSize.height, labelSize.height) + topInset + bottomInset
-        return NSSize(width: max(width, 28), height: height)
+        return NSSize(width: max(width, 20), height: height)
     }
 
     override func mouseUp(with event: NSEvent) {
