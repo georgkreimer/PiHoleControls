@@ -50,18 +50,12 @@ final class StatusItemController {
             let centerX = statusView.centerXAnchor.constraint(equalTo: button.centerXAnchor)
             let centerY = statusView.centerYAnchor.constraint(equalTo: button.centerYAnchor, constant: statusViewVerticalOffset)
 
-            // Do not force zero size; let intrinsicContentSize determine size.
-            // Add non-conflicting minimums just to avoid ambiguity.
-            let minWidth = statusView.widthAnchor.constraint(greaterThanOrEqualToConstant: 0)
-            let minHeight = statusView.heightAnchor.constraint(greaterThanOrEqualToConstant: 0)
-            minWidth.priority = .defaultLow
-            minHeight.priority = .defaultLow
+            let width = statusView.widthAnchor.constraint(equalToConstant: 0)
+            let height = statusView.heightAnchor.constraint(equalToConstant: 0)
+            statusViewWidthConstraint = width
+            statusViewHeightConstraint = height
 
-            NSLayoutConstraint.activate([centerX, centerY, minWidth, minHeight])
-
-            // We no longer keep adjustable equal-size constraints.
-            statusViewWidthConstraint = nil
-            statusViewHeightConstraint = nil
+            NSLayoutConstraint.activate([centerX, centerY, width, height])
         }
 
         store.$isBlockingEnabled
@@ -110,6 +104,8 @@ final class StatusItemController {
 
         // Size the status item to our view’s intrinsic width.
         let size = statusView.intrinsicContentSize
+        statusViewWidthConstraint?.constant = size.width
+        statusViewHeightConstraint?.constant = size.height
         statusItem.length = size.width
 
         statusView.toolTip = title.isEmpty ? nil : title
@@ -220,7 +216,7 @@ private final class StatusItemView: NSView {
                                height: max(placeholderLabelHeight, labelIntrinsic.height))
         let width = max(imageSize.width, labelSize.width) + (horizontalInset * 2)
         let height = max(imageSize.height, labelSize.height) + topInset + bottomInset
-        return NSSize(width: max(width, 20), height: height)
+        return NSSize(width: width, height: height)
     }
 }
 
