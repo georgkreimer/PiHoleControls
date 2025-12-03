@@ -117,7 +117,7 @@ final class StatusItemController {
             return (NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: "Pi-hole")?.settingTemplate(true), 1)
         }
 
-        let baseImage = NSImage(named: "MenuIconInactive")?
+        let baseImage = NSImage(named: "MenuIcon")?
             .trimmedToAlphaBounds()
             .resizedForStatusBar(maxDimension: 15, template: true)
 
