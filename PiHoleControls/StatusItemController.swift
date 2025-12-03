@@ -18,6 +18,9 @@ final class StatusItemController {
     private let store: PiHoleStore
     private var cancellables = Set<AnyCancellable>()
     private var disableAfterAction: (() -> Void)?
+    private var statusViewWidthConstraint: NSLayoutConstraint?
+    private var statusViewHeightConstraint: NSLayoutConstraint?
+    private let statusViewVerticalOffset: CGFloat = -2
 
     init(store: PiHoleStore) {
         self.store = store
@@ -38,16 +41,27 @@ final class StatusItemController {
             button.title = ""
             button.image = nil
             button.isBordered = false
-            if let cell = button.cell as? NSButtonCell {
-                cell.highlightsBy = []
-                cell.showsStateBy = []
-            }
             button.target = self
             button.action = #selector(handleStatusItemClick)
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+
             button.addSubview(statusView)
-            statusView.translatesAutoresizingMaskIntoConstraints = true
-            statusView.autoresizingMask = []
+            statusView.translatesAutoresizingMaskIntoConstraints = false
+            let centerX = statusView.centerXAnchor.constraint(equalTo: button.centerXAnchor)
+            let centerY = statusView.centerYAnchor.constraint(equalTo: button.centerYAnchor, constant: statusViewVerticalOffset)
+
+            // Do not force zero size; let intrinsicContentSize determine size.
+            // Add non-conflicting minimums just to avoid ambiguity.
+            let minWidth = statusView.widthAnchor.constraint(greaterThanOrEqualToConstant: 0)
+            let minHeight = statusView.heightAnchor.constraint(greaterThanOrEqualToConstant: 0)
+            minWidth.priority = .defaultLow
+            minHeight.priority = .defaultLow
+
+            NSLayoutConstraint.activate([centerX, centerY, minWidth, minHeight])
+
+            // We no longer keep adjustable equal-size constraints.
+            statusViewWidthConstraint = nil
+            statusViewHeightConstraint = nil
         }
 
         store.$isBlockingEnabled
@@ -93,12 +107,11 @@ final class StatusItemController {
         }
         let statusImage = statusImage()
         statusView.update(image: statusImage.image, imageAlpha: statusImage.alpha, timerText: timerText)
+
+        // Size the status item to our view’s intrinsic width.
         let size = statusView.intrinsicContentSize
         statusItem.length = size.width
-        if let button = statusItem.button {
-            let yOffset = floor((button.bounds.height - size.height) / 2) - 2
-            statusView.frame = NSRect(x: 0, y: yOffset, width: size.width, height: size.height)
-        }
+
         statusView.toolTip = title.isEmpty ? nil : title
     }
 
@@ -117,9 +130,6 @@ final class StatusItemController {
 }
 
 private final class StatusItemView: NSView {
-    var onLeftClick: (() -> Void)?
-    var onRightClick: (() -> Void)?
-
     private let imageView = NSImageView()
     private let label = NSTextField(labelWithString: "")
     private var labelHeightConstraint: NSLayoutConstraint?
@@ -211,18 +221,6 @@ private final class StatusItemView: NSView {
         let width = max(imageSize.width, labelSize.width) + (horizontalInset * 2)
         let height = max(imageSize.height, labelSize.height) + topInset + bottomInset
         return NSSize(width: max(width, 20), height: height)
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        if event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
-            onRightClick?()
-        } else {
-            onLeftClick?()
-        }
-    }
-
-    override func rightMouseUp(with event: NSEvent) {
-        onRightClick?()
     }
 }
 
