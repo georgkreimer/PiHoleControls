@@ -376,7 +376,7 @@ struct PiHoleClient {
             return decoded.status.lowercased() == "enabled"
         } catch {
             let bodyPreview = String(data: data, encoding: .utf8)?.prefix(300)
-            throw PiHoleError.invalidResponse(statusCode: (response as? HTTPURLResponse)?.statusCode,
+            throw PiHoleError.invalidResponse(statusCode: response.statusCode,
                                               bodyPreview: bodyPreview.map(String.init),
                                               endpoint: "admin/api.php")
         }

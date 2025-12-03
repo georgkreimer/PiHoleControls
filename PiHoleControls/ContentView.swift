@@ -42,13 +42,15 @@ struct ContentView: View {
                 }
                 .disabled(store.isLoading)
             } else if store.isBlockingEnabled == true {
-                VStack(alignment: .leading, spacing: 6) {
-                    Picker("Disable for", selection: $selectedDisableOption) {
+                HStack {
+                    Picker("", selection: $selectedDisableOption) {
                         ForEach(DisableOption.allCases, id: \.self) { option in
                             Text(option.label).tag(option)
                         }
                     }
+                    .labelsHidden()
                     .pickerStyle(.menu)
+
                     Button("Disable") {
                         store.disableBlocking(durationSeconds: selectedDisableOption.durationSeconds)
                         dismissMenu?()
@@ -74,6 +76,12 @@ struct ContentView: View {
             }
         }
         .padding(8)
+        .onAppear {
+            syncDefaultSelection()
+        }
+        .onChange(of: selectedDisableOption) {
+            store.defaultDisableMinutes = selectedDisableOption.minutesValue
+        }
     }
 
     private var statusText: String {
@@ -84,6 +92,15 @@ struct ContentView: View {
     private var statusColor: Color {
         guard let enabled = store.isBlockingEnabled else { return .gray }
         return enabled ? .green : .orange
+    }
+
+    private func syncDefaultSelection() {
+        let minutes = max(store.defaultDisableMinutes, 0)
+        if minutes == 0 {
+            selectedDisableOption = .untilReenabled
+        } else {
+            selectedDisableOption = .minutes(minutes)
+        }
     }
 }
 
@@ -112,5 +129,12 @@ private enum DisableOption: Hashable, CaseIterable {
 
     static var allCases: [DisableOption] {
         [.minutes(5), .minutes(30), .minutes(60), .untilReenabled]
+    }
+
+    var minutesValue: Int {
+        switch self {
+        case .minutes(let m): return m
+        case .untilReenabled: return 0
+        }
     }
 }

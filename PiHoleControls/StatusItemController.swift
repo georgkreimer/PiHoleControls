@@ -80,9 +80,101 @@ final class StatusItemController {
 
     private func updateButton() {
         guard let button = statusItem.button else { return }
-        button.image = NSImage(systemSymbolName: store.menuBarIconSystemName, accessibilityDescription: "Pi-hole")
+        button.image = statusImage()
         button.imagePosition = .imageLeading
         button.title = store.menuBarTitle
         button.toolTip = store.menuBarTitle
+    }
+
+    private func statusImage() -> NSImage? {
+        // Keep system symbols for loading and unknown states to surface feedback.
+        if store.isLoading {
+            return NSImage(systemSymbolName: "arrow.triangle.2.circlepath", accessibilityDescription: "Pi-hole")?.settingTemplate(true)
+        }
+        guard let enabled = store.isBlockingEnabled else {
+            return NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: "Pi-hole")?.settingTemplate(true)
+        }
+
+        if enabled {
+            return NSImage(named: "MenuIconActive")?
+                .trimmedToAlphaBounds()
+                .resizedForStatusBar(template: false)
+        } else {
+            return NSImage(named: "MenuIconInactive")?
+                .trimmedToAlphaBounds()
+                .resizedForStatusBar(template: true)
+        }
+    }
+}
+
+private extension NSImage {
+    func resizedForStatusBar(template: Bool) -> NSImage {
+        let copy = self.copy() as? NSImage ?? self
+        let maxDimension: CGFloat = 18
+        let originalSize = copy.size
+        if originalSize.width > 0, originalSize.height > 0 {
+            let scale = min(maxDimension / originalSize.width, maxDimension / originalSize.height)
+            copy.size = NSSize(width: originalSize.width * scale, height: originalSize.height * scale)
+        } else {
+            copy.size = NSSize(width: maxDimension, height: maxDimension)
+        }
+        copy.isTemplate = template
+        return copy
+    }
+
+    func settingTemplate(_ isTemplate: Bool) -> NSImage {
+        let copy = self.copy() as? NSImage ?? self
+        copy.isTemplate = isTemplate
+        return copy
+    }
+
+    func trimmedToAlphaBounds() -> NSImage {
+        guard let cgImage = self.cgImage(forProposedRect: nil, context: nil, hints: nil),
+              let data = cgImage.dataProvider?.data else { return self }
+
+        let alphaInfo = cgImage.alphaInfo
+        let alphaOffset: Int
+        switch alphaInfo {
+        case .premultipliedLast, .last, .noneSkipLast:
+            alphaOffset = cgImage.bitsPerPixel / 8 - 1
+        case .premultipliedFirst, .first, .noneSkipFirst:
+            alphaOffset = 0
+        default:
+            return self
+        }
+
+        let width = cgImage.width
+        let height = cgImage.height
+        let bytesPerPixel = cgImage.bitsPerPixel / 8
+        let bytesPerRow = cgImage.bytesPerRow
+        guard bytesPerPixel >= 4, let ptr = CFDataGetBytePtr(data) else { return self }
+
+        var minX = width
+        var maxX = 0
+        var minY = height
+        var maxY = 0
+
+        for y in 0..<height {
+            let row = ptr + y * bytesPerRow
+            for x in 0..<width {
+                let pixel = row + x * bytesPerPixel
+                let alpha = pixel[alphaOffset]
+                if alpha > 0 {
+                    minX = min(minX, x)
+                    maxX = max(maxX, x)
+                    minY = min(minY, y)
+                    maxY = max(maxY, y)
+                }
+            }
+        }
+
+        if minX > maxX || minY > maxY { return self }
+
+        let rect = CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+        guard let cropped = cgImage.cropping(to: rect) else { return self }
+
+        let trimmed = NSImage(cgImage: cropped, size: NSSize(width: rect.width, height: rect.height))
+        trimmed.isTemplate = self.isTemplate
+        return trimmed
     }
 }

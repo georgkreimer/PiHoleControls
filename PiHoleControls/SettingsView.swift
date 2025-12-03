@@ -80,9 +80,15 @@ struct SettingsView: View {
         }
         .padding()
         .frame(width: 350, height: 340)
-        .onChange(of: store.host) { _ in resetTestState() }
-        .onChange(of: store.token) { _ in resetTestState() }
-        .onChange(of: store.allowSelfSignedCert) { _ in resetTestState() }
+        .onChange(of: store.host) {
+            resetTestState()
+        }
+        .onChange(of: store.token) {
+            resetTestState()
+        }
+        .onChange(of: store.allowSelfSignedCert) {
+            resetTestState()
+        }
     }
 }
 
