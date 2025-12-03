@@ -13,6 +13,7 @@ import Combine
 /// Manages the status bar item and routes clicks to toggle blocking or open the popover menu.
 final class StatusItemController {
     private let statusItem: NSStatusItem
+    private let statusView: StatusItemView
     private let popover: NSPopover
     private let store: PiHoleStore
     private var cancellables = Set<AnyCancellable>()
@@ -21,6 +22,7 @@ final class StatusItemController {
     init(store: PiHoleStore) {
         self.store = store
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        self.statusView = StatusItemView()
         self.popover = NSPopover()
         self.popover.behavior = .transient
         // Inject a callback so menu actions can close the popover.
@@ -32,11 +34,9 @@ final class StatusItemController {
             .environment(\.dismissMenu, { [weak self] in self?.disableAfterAction?() })
         self.popover.contentViewController = NSHostingController(rootView: contentView)
 
-        if let button = statusItem.button {
-            button.target = self
-            button.action = #selector(statusItemClicked(_:))
-            button.sendAction(on: [.leftMouseUp, .rightMouseUp])
-        }
+        statusView.onLeftClick = { [weak self] in self?.toggleBlocking() }
+        statusView.onRightClick = { [weak self] in self?.togglePopover() }
+        statusItem.view = statusView
 
         store.$isBlockingEnabled
             .combineLatest(store.$remainingDisableSeconds, store.$isLoading)
@@ -49,21 +49,6 @@ final class StatusItemController {
         updateButton()
     }
 
-    @objc private func statusItemClicked(_ sender: Any?) {
-        guard let event = NSApp.currentEvent else {
-            togglePopover()
-            return
-        }
-        switch event.type {
-        case .rightMouseUp:
-            togglePopover()
-        case .leftMouseUp:
-            toggleBlocking()
-        default:
-            break
-        }
-    }
-
     private func toggleBlocking() {
         guard !store.isLoading else { return }
         store.toggleBlocking()
@@ -72,18 +57,24 @@ final class StatusItemController {
     private func togglePopover() {
         if popover.isShown {
             popover.performClose(nil)
-        } else if let button = statusItem.button {
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        } else if let view = statusItem.view {
+            popover.show(relativeTo: view.bounds, of: view, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
         }
     }
 
     private func updateButton() {
-        guard let button = statusItem.button else { return }
-        button.image = statusImage()
-        button.imagePosition = .imageLeading
-        button.title = store.menuBarTitle
-        button.toolTip = store.menuBarTitle
+        let title = store.menuBarTitle
+        let timerText = store.remainingDisableSeconds.map { remaining -> String in
+            let min = remaining / 60
+            let sec = remaining % 60
+            return String(format: "%d:%02d", min, sec)
+        }
+        statusView.update(image: statusImage(), timerText: timerText)
+        let size = statusView.intrinsicContentSize
+        statusView.frame = NSRect(origin: .zero, size: size)
+        statusItem.length = size.width
+        statusView.toolTip = title.isEmpty ? nil : title
     }
 
     private func statusImage() -> NSImage? {
@@ -98,19 +89,101 @@ final class StatusItemController {
         if enabled {
             return NSImage(named: "MenuIconActive")?
                 .trimmedToAlphaBounds()
-                .resizedForStatusBar(template: false)
+                .resizedForStatusBar(maxDimension: 16, template: false)
         } else {
             return NSImage(named: "MenuIconInactive")?
                 .trimmedToAlphaBounds()
-                .resizedForStatusBar(template: true)
+                .resizedForStatusBar(maxDimension: 16, template: true)
         }
     }
 }
 
+private final class StatusItemView: NSView {
+    var onLeftClick: (() -> Void)?
+    var onRightClick: (() -> Void)?
+
+    private let imageView = NSImageView()
+    private let label = NSTextField(labelWithString: "")
+
+    private let horizontalInset: CGFloat = 4
+    private let topInset: CGFloat = 2
+    private let bottomInset: CGFloat = 2
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        translatesAutoresizingMaskIntoConstraints = false
+
+        imageView.imageScaling = .scaleProportionallyDown
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        imageView.setContentHuggingPriority(.required, for: .vertical)
+        imageView.setContentHuggingPriority(.required, for: .horizontal)
+
+        label.font = NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .semibold)
+        label.alignment = .center
+        label.lineBreakMode = .byWordWrapping
+        label.textColor = .white
+        let shadow = NSShadow()
+        shadow.shadowOffset = NSSize(width: 0, height: -1)
+        shadow.shadowBlurRadius = 2
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.45)
+        label.shadow = shadow
+        label.setContentHuggingPriority(.required, for: .vertical)
+        label.setContentCompressionResistancePriority(.required, for: .vertical)
+        label.translatesAutoresizingMaskIntoConstraints = false
+
+        addSubview(imageView)
+        addSubview(label)
+        NSLayoutConstraint.activate([
+            imageView.topAnchor.constraint(equalTo: topAnchor, constant: topInset),
+            imageView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            imageView.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: horizontalInset),
+            imageView.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -horizontalInset),
+
+            label.centerXAnchor.constraint(equalTo: imageView.centerXAnchor),
+            label.centerYAnchor.constraint(equalTo: imageView.centerYAnchor),
+            label.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: horizontalInset),
+            label.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -horizontalInset),
+
+            bottomAnchor.constraint(equalTo: imageView.bottomAnchor, constant: bottomInset)
+        ])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func update(image: NSImage?, timerText: String?) {
+        imageView.image = image
+        label.stringValue = timerText ?? ""
+        label.isHidden = (timerText ?? "").isEmpty
+        invalidateIntrinsicContentSize()
+        needsLayout = true
+    }
+
+    override var intrinsicContentSize: NSSize {
+        let imageSize = imageView.intrinsicContentSize
+        let labelSize = label.intrinsicContentSize
+        let width = max(imageSize.width, labelSize.width) + (horizontalInset * 2)
+        let height = max(imageSize.height, labelSize.height) + topInset + bottomInset
+        return NSSize(width: max(width, 28), height: height)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if event.type == .rightMouseUp || event.modifierFlags.contains(.control) {
+            onRightClick?()
+        } else {
+            onLeftClick?()
+        }
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        onRightClick?()
+    }
+}
+
 private extension NSImage {
-    func resizedForStatusBar(template: Bool) -> NSImage {
+    func resizedForStatusBar(maxDimension: CGFloat = 14, template: Bool) -> NSImage {
         let copy = self.copy() as? NSImage ?? self
-        let maxDimension: CGFloat = 18
         let originalSize = copy.size
         if originalSize.width > 0, originalSize.height > 0 {
             let scale = min(maxDimension / originalSize.width, maxDimension / originalSize.height)

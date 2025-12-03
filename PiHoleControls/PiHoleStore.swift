@@ -26,12 +26,20 @@ final class PiHoleStore: ObservableObject {
     // MARK: - Menu bar helpers
 
     var menuBarTitle: String {
-        if let remaining = remainingDisableSeconds, remaining > 0, isBlockingEnabled == false {
-            let min = remaining / 60
-            let sec = remaining % 60
-            return String(format: "%d:%02d", min, sec)
+        if isLoading { return "" }
+        switch isBlockingEnabled {
+        case .some(true):
+            return ""
+        case .some(false):
+            if let remaining = remainingDisableSeconds, remaining > 0 {
+                let min = remaining / 60
+                let sec = remaining % 60
+                return String(format: "%d:%02d", min, sec)
+            }
+            return ""
+        case .none:
+            return ""
         }
-        return ""
     }
 
     var menuBarIconSystemName: String {
