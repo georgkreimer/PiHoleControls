@@ -134,29 +134,35 @@ private struct StatusContentView: View {
     @Binding var appearAnimation: Bool
     let onSettingsTapped: () -> Void
     let onDisable: () -> Void
-
+    @State private var footerHeight: CGFloat = 0
+ 
     var body: some View {
-        VStack(spacing: 0) {
-            statusCard
-                .padding(.horizontal, 16)
-                .padding(.top, 16)
-                .padding(.bottom, 20)
-
-            actionSection
-                .padding(.horizontal, 16)
-                .padding(.bottom, 12)
+        ZStack(alignment: .top) {
+            VStack(spacing: 0) {
+                statusCard
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
+                    .padding(.bottom, 20)
  
-            Spacer(minLength: 0)
+                actionSection
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+            }
+            .padding(.bottom, footerHeight)
  
-            Divider()
-                .opacity(0.5)
+            VStack(spacing: 0) {
+                Divider()
+                    .opacity(0.5)
  
-            footerButtons
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                footerButtons
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+            }
+            .background(HeightReader { footerHeight = $0 })
+            .frame(maxHeight: .infinity, alignment: .bottom)
         }
-
     }
+
 
     // MARK: - Status Card
 
