@@ -18,9 +18,6 @@ struct ContentView: View {
     @State private var selectedDisableOption: DisableOption = .minutes(5)
     @State private var appearAnimation = false
 
-    // Shared height for both views - based on the taller one (settings)
-    private let viewHeight: CGFloat = 440
-
     var body: some View {
         ZStack(alignment: .topLeading) {
             // Status view
@@ -31,7 +28,7 @@ struct ContentView: View {
                 onSettingsTapped: { withAnimation(.easeOut(duration: 0.35)) { showSettings = true } },
                 onDisable: { dismissMenu?() }
             )
-            .frame(width: 300, height: viewHeight)
+            .frame(width: 300)
             .offset(x: showSettings ? -300 : 0)
             .opacity(showSettings ? 0 : 1)
 
@@ -40,11 +37,11 @@ struct ContentView: View {
                 store: store,
                 onBack: { withAnimation(.easeOut(duration: 0.35)) { showSettings = false } }
             )
-            .frame(width: 300, height: viewHeight)
+            .frame(width: 300)
             .offset(x: showSettings ? 0 : 300)
             .opacity(showSettings ? 1 : 0)
         }
-        .frame(width: 300, height: viewHeight)
+        .frame(width: 300)
         .background(.ultraThinMaterial)
         .clipped()
         .animation(.easeOut(duration: 0.35), value: showSettings)
@@ -57,6 +54,35 @@ struct ContentView: View {
         .onChange(of: selectedDisableOption) {
             store.defaultDisableMinutes = selectedDisableOption.minutesValue
         }
+        // Keyboard shortcuts
+        .keyboardShortcut("e", modifiers: .command)
+        .background {
+            // Hidden buttons to capture keyboard shortcuts
+            Group {
+                Button("") {
+                    if !store.isLoading && store.isBlockingEnabled == false {
+                        store.enableBlocking()
+                    }
+                }
+                .keyboardShortcut("e", modifiers: .command)
+                .opacity(0)
+                
+                Button("") {
+                    if !store.isLoading && store.isBlockingEnabled == true {
+                        store.disableBlocking(durationSeconds: selectedDisableOption.durationSeconds)
+                        dismissMenu?()
+                    }
+                }
+                .keyboardShortcut("d", modifiers: .command)
+                .opacity(0)
+                
+                Button("") {
+                    store.refreshStatus()
+                }
+                .keyboardShortcut("r", modifiers: .command)
+                .opacity(0)
+            }
+        }
     }
 
     private func syncDefaultSelection() {
@@ -66,6 +92,22 @@ struct ContentView: View {
         } else {
             selectedDisableOption = .minutes(minutes)
         }
+    }
+}
+
+// MARK: - Preference Keys for Dynamic Height
+
+private struct StatusHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct SettingsHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 
@@ -83,10 +125,11 @@ private struct StatusContentView: View {
             statusCard
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
-                .padding(.bottom, 12)
+                .padding(.bottom, 20)
 
             actionSection
                 .padding(.horizontal, 16)
+                .padding(.bottom, 20)
 
             Spacer()
 
@@ -140,7 +183,7 @@ private struct StatusContentView: View {
                             .foregroundStyle(statusIconGradient)
                             .contentTransition(.numericText())
                     } else if store.isLoading {
-                        Text("Updating...")
+                        Text("Checking status...")
                             .font(.system(size: 12, weight: .medium, design: .rounded))
                             .foregroundStyle(.secondary)
                     } else if let error = store.lastError {
@@ -162,7 +205,7 @@ private struct StatusContentView: View {
             .offset(y: appearAnimation ? 0 : 10)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 16)
+        .padding(.vertical, 40)
         .background {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(.ultraThinMaterial)
@@ -178,18 +221,7 @@ private struct StatusContentView: View {
 
     private var actionSection: some View {
         VStack(spacing: 10) {
-            HStack(spacing: 6) {
-                ForEach(DisableOption.allCases, id: \.self) { option in
-                    DurationPill(
-                        label: option.shortLabel,
-                        isSelected: selectedDisableOption == option,
-                        action: { selectedDisableOption = option }
-                    )
-                    .disabled(store.isBlockingEnabled != true)
-                }
-            }
-            .opacity(store.isBlockingEnabled == true ? 1 : 0.4)
-
+            // Action button first
             ZStack {
                 ActionButton(
                     title: "Enable Blocking",
@@ -225,6 +257,19 @@ private struct StatusContentView: View {
                 .opacity(store.isBlockingEnabled == nil ? 1 : 0)
                 .allowsHitTesting(store.isBlockingEnabled == nil)
             }
+
+            // Duration picker below button
+            HStack(spacing: 6) {
+                ForEach(DisableOption.allCases, id: \.self) { option in
+                    DurationPill(
+                        label: option.shortLabel,
+                        isSelected: selectedDisableOption == option,
+                        action: { selectedDisableOption = option }
+                    )
+                    .disabled(store.isBlockingEnabled != true)
+                }
+            }
+            .opacity(store.isBlockingEnabled == true ? 1 : 0.4)
         }
         .opacity(appearAnimation ? 1 : 0)
         .offset(y: appearAnimation ? 0 : 15)
@@ -257,7 +302,7 @@ private struct StatusContentView: View {
     }
 
     private var statusTitle: String {
-        if store.isLoading { return "Updating" }
+        if store.isLoading { return "Checking" }
         guard let enabled = store.isBlockingEnabled else { return "Unknown" }
         return enabled ? "Protected" : "Unprotected"
     }
@@ -308,6 +353,7 @@ private struct SettingsContentView: View {
     @ObservedObject var store: PiHoleStore
     let onBack: () -> Void
     @State private var testState: TestState = .idle
+    @State private var appearAnimation = false
 
     enum TestState: Equatable {
         case idle, loading, success, failure(String)
@@ -315,17 +361,21 @@ private struct SettingsContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header with back button
-            header
+            // Header
+            settingsHeader
                 .padding(.horizontal, 16)
                 .padding(.top, 16)
-                .padding(.bottom, 12)
+                .padding(.bottom, 14)
 
-            VStack(spacing: 16) {
+            // Main content
+            VStack(spacing: 14) {
                 serverCard
                 connectionCard
             }
             .padding(.horizontal, 16)
+            .padding(.bottom, 16)
+            .opacity(appearAnimation ? 1 : 0)
+            .offset(y: appearAnimation ? 0 : 15)
 
             Spacer()
 
@@ -340,96 +390,156 @@ private struct SettingsContentView: View {
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
         }
-        .onChange(of: store.host) { resetTestState() }
-        .onChange(of: store.token) { resetTestState() }
-        .onChange(of: store.allowSelfSignedCert) { resetTestState() }
+        .onAppear {
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
+                appearAnimation = true
+            }
+        }
+        .onChange(of: store.host) { _, _ in resetTestState() }
+        .onChange(of: store.token) { _, _ in resetTestState() }
+        .onChange(of: store.allowSelfSignedCert) { _, _ in resetTestState() }
     }
 
     // MARK: - Header
 
-    private var header: some View {
-        HStack(spacing: 10) {
+    private var settingsHeader: some View {
+        HStack(spacing: 12) {
             ZStack {
+                // Glow effect
                 Circle()
                     .fill(
-                        LinearGradient(
-                            colors: [.blue, .blue.opacity(0.7)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
+                        RadialGradient(
+                            colors: [.blue, .blue.opacity(0)],
+                            center: .center,
+                            startRadius: 0,
+                            endRadius: 30
                         )
                     )
-                    .frame(width: 36, height: 36)
+                    .frame(width: 50, height: 50)
+                    .blur(radius: 12)
+                    .opacity(appearAnimation ? 0.5 : 0)
 
-                Image(systemName: "gearshape.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
+                // Icon container
+                ZStack {
+                    Circle()
+                        .fill(.ultraThinMaterial)
+                        .frame(width: 44, height: 44)
+
+                    Circle()
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [.white.opacity(0.3), .white.opacity(0.1)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1.5
+                        )
+                        .frame(width: 44, height: 44)
+
+                    Image(systemName: "gearshape.fill")
+                        .font(.system(size: 20, weight: .medium))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [.blue, .blue.opacity(0.7)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                }
+                .scaleEffect(appearAnimation ? 1 : 0.5)
+                .opacity(appearAnimation ? 1 : 0)
             }
 
-            VStack(alignment: .leading, spacing: 1) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Settings")
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                Text("Configure Pi-hole connection")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundStyle(.primary)
+                Text("Configure your Pi-hole")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
             }
 
             Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.1), radius: 8, y: 4)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(.white.opacity(0.2), lineWidth: 1)
         }
     }
 
     // MARK: - Server Card
 
     private var serverCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Label {
+        VStack(alignment: .leading, spacing: 14) {
+            // Section header
+            HStack(spacing: 8) {
+                ZStack {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [.purple, .purple.opacity(0.7)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .frame(width: 24, height: 24)
+
+                    Image(systemName: "server.rack")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+
                 Text("Server")
-                    .font(.system(size: 12, weight: .semibold, design: .rounded))
-            } icon: {
-                Image(systemName: "server.rack")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.blue)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
             }
 
             VStack(spacing: 10) {
                 SettingsTextField(
                     icon: "globe",
                     placeholder: "Host or URL",
+                    hint: "pi.hole or 192.168.1.2:8080",
                     text: $store.host
                 )
 
                 SettingsSecureField(
                     icon: "key.fill",
-                    placeholder: "API Token",
+                    placeholder: "API Token / Password",
                     text: $store.token
                 )
             }
 
-            Text("Example: pi.hole or 192.168.1.2:8080")
-                .font(.system(size: 10, weight: .medium, design: .rounded))
-                .foregroundStyle(.secondary)
-
-            Divider()
-                .opacity(0.5)
-
-            Toggle(isOn: $store.allowSelfSignedCert) {
-                HStack(spacing: 6) {
-                    Image(systemName: "lock.shield")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.secondary)
-                    Text("Allow self-signed certificates")
-                        .font(.system(size: 11, weight: .medium, design: .rounded))
+            // Toggle with better styling
+            HStack {
+                Toggle(isOn: $store.allowSelfSignedCert) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "lock.shield")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(store.allowSelfSignedCert ? .orange : .secondary)
+                        Text("Allow self-signed certificates")
+                            .font(.system(size: 11, weight: .medium, design: .rounded))
+                            .foregroundStyle(.primary.opacity(0.8))
+                    }
                 }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
             }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
+            .padding(.top, 4)
         }
-        .padding(12)
+        .padding(14)
         .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.08), radius: 8, y: 4)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(.white.opacity(0.2), lineWidth: 1)
         }
     }
@@ -437,15 +547,28 @@ private struct SettingsContentView: View {
     // MARK: - Connection Card
 
     private var connectionCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Label {
+                // Section header
+                HStack(spacing: 8) {
+                    ZStack {
+                        Circle()
+                            .fill(
+                                LinearGradient(
+                                    colors: [testStateColor, testStateColor.opacity(0.7)],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(width: 24, height: 24)
+
+                        Image(systemName: testStateIcon)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
+
                     Text("Connection")
-                        .font(.system(size: 12, weight: .semibold, design: .rounded))
-                } icon: {
-                    Image(systemName: "antenna.radiowaves.left.and.right")
-                        .font(.system(size: 10))
-                        .foregroundStyle(.green)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
                 }
 
                 Spacer()
@@ -454,18 +577,37 @@ private struct SettingsContentView: View {
             }
 
             testResultView
-                .frame(height: 44, alignment: .top)
+                .frame(height: 36, alignment: .center)
         }
-        .padding(12)
+        .padding(14)
         .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.08), radius: 8, y: 4)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .strokeBorder(.white.opacity(0.2), lineWidth: 1)
         }
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: testState)
+    }
+
+    private var testStateColor: Color {
+        switch testState {
+        case .idle: return .cyan
+        case .loading: return .blue
+        case .success: return .green
+        case .failure: return .red
+        }
+    }
+
+    private var testStateIcon: String {
+        switch testState {
+        case .idle: return "antenna.radiowaves.left.and.right"
+        case .loading: return "arrow.triangle.2.circlepath"
+        case .success: return "checkmark"
+        case .failure: return "xmark"
+        }
     }
 
     private var testButton: some View {
@@ -473,21 +615,21 @@ private struct SettingsContentView: View {
             testState = .loading
             Task { await runConnectionTest() }
         } label: {
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 if testState == .loading {
                     ProgressView()
                         .controlSize(.mini)
                         .scaleEffect(0.7)
                 } else {
                     Image(systemName: "bolt.fill")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                 }
                 Text(testState == .loading ? "Testing..." : "Test")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 5)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
             .background {
                 Capsule()
                     .fill(
@@ -497,6 +639,7 @@ private struct SettingsContentView: View {
                             endPoint: .bottom
                         )
                     )
+                    .shadow(color: .blue.opacity(0.3), radius: 4, y: 2)
             }
         }
         .buttonStyle(.plain)
@@ -507,48 +650,57 @@ private struct SettingsContentView: View {
     private var testResultView: some View {
         switch testState {
         case .idle:
-            HStack(spacing: 6) {
-                Image(systemName: "info.circle")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary.opacity(0.5))
-                Text("Test your connection")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(.secondary.opacity(0.6))
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-
-        case .loading:
-            HStack(spacing: 6) {
-                ProgressView()
-                    .controlSize(.mini)
-                Text("Connecting...")
+            HStack(spacing: 8) {
+                Text("Tap Test to verify your Pi-hole connection")
                     .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
+
+        case .loading:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text("Authenticating...")
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
+                    .foregroundStyle(.primary.opacity(0.8))
+            }
+            .frame(maxWidth: .infinity)
 
         case .success:
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 14))
+                    .font(.system(size: 16))
                     .foregroundStyle(.green)
-                Text("Connected!")
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                Text("Connection successful!")
+                    .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .foregroundStyle(.green)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(.green.opacity(0.15))
+            }
 
         case .failure(let message):
-            HStack(spacing: 6) {
-                Image(systemName: "xmark.circle.fill")
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 14))
                     .foregroundStyle(.red)
                 Text(message)
-                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .font(.system(size: 11, weight: .medium, design: .rounded))
                     .foregroundStyle(.red.opacity(0.9))
                     .lineLimit(2)
+                    .multilineTextAlignment(.leading)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(.red.opacity(0.15))
+            }
         }
     }
 
@@ -590,32 +742,48 @@ private struct SettingsContentView: View {
 private struct SettingsTextField: View {
     let icon: String
     let placeholder: String
+    var hint: String? = nil
     @Binding var text: String
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(isFocused ? .blue : .secondary)
-                .frame(width: 14)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(isFocused ? Color.blue.opacity(0.15) : Color.primary.opacity(0.08))
+                        .frame(width: 28, height: 28)
 
-            TextField(placeholder, text: $text)
-                .textFieldStyle(.plain)
-                .font(.system(size: 12, weight: .regular, design: .rounded))
-                .focused($isFocused)
+                    Image(systemName: icon)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(isFocused ? .blue : .primary.opacity(0.6))
+                }
+
+                TextField(placeholder, text: $text)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13, weight: .regular, design: .rounded))
+                    .focused($isFocused)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color(nsColor: .textBackgroundColor).opacity(0.8))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .strokeBorder(isFocused ? Color.blue.opacity(0.6) : Color.primary.opacity(0.15), lineWidth: 1)
+            }
+            .shadow(color: isFocused ? .blue.opacity(0.15) : .black.opacity(0.05), radius: 4, y: 2)
+
+            if let hint = hint {
+                Text(hint)
+                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                    .foregroundStyle(.secondary.opacity(0.7))
+                    .padding(.leading, 4)
+            }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.ultraThinMaterial)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(isFocused ? Color.blue.opacity(0.5) : Color.white.opacity(0.2), lineWidth: 1)
-        }
-        .animation(.easeInOut(duration: 0.15), value: isFocused)
+        .animation(.easeInOut(duration: 0.2), value: isFocused)
     }
 }
 
@@ -629,22 +797,27 @@ private struct SettingsSecureField: View {
     @State private var isRevealed = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(isFocused ? .blue : .secondary)
-                .frame(width: 14)
+        HStack(spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(isFocused ? Color.blue.opacity(0.15) : Color.primary.opacity(0.08))
+                    .frame(width: 28, height: 28)
+
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(isFocused ? .blue : .primary.opacity(0.6))
+            }
 
             ZStack {
                 if isRevealed {
                     TextField(placeholder, text: $text)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 12, weight: .regular, design: .rounded))
+                        .font(.system(size: 13, weight: .regular, design: .rounded))
                         .focused($isFocused)
                 } else {
                     SecureField(placeholder, text: $text)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 12, weight: .regular, design: .rounded))
+                        .font(.system(size: 13, weight: .regular, design: .rounded))
                         .focused($isFocused)
                 }
             }
@@ -652,23 +825,30 @@ private struct SettingsSecureField: View {
             Button {
                 isRevealed.toggle()
             } label: {
-                Image(systemName: isRevealed ? "eye.slash.fill" : "eye.fill")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
+                ZStack {
+                    Circle()
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(width: 28, height: 28)
+
+                    Image(systemName: isRevealed ? "eye.slash.fill" : "eye.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.primary.opacity(0.5))
+                }
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .background {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(.ultraThinMaterial)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor).opacity(0.8))
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(isFocused ? Color.blue.opacity(0.5) : Color.white.opacity(0.2), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(isFocused ? Color.blue.opacity(0.6) : Color.primary.opacity(0.15), lineWidth: 1)
         }
-        .animation(.easeInOut(duration: 0.15), value: isFocused)
+        .shadow(color: isFocused ? .blue.opacity(0.15) : .black.opacity(0.05), radius: 4, y: 2)
+        .animation(.easeInOut(duration: 0.2), value: isFocused)
     }
 }
 

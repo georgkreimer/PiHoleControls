@@ -206,13 +206,14 @@ struct PiHoleClient {
             do {
                 // Prefer session if available (works with app passwords), then other modes.
                 var authModes: [AuthMode] = []
-                if let sessionAuth { authModes.append(.session(sessionAuth)) }
-                // If no session yet, try to create one up front.
+                // If no session yet, try to create one up front. This validates the token.
                 if sessionAuth == nil {
-                    if let session = try? await createSessionAuth() {
-                        sessionAuth = session
-                        authModes.append(.session(session))
-                    }
+                    // createSessionAuth will throw if authentication fails
+                    let session = try await createSessionAuth()
+                    sessionAuth = session
+                    authModes.append(.session(session))
+                } else if let sessionAuth {
+                    authModes.append(.session(sessionAuth))
                 }
                 authModes.append(contentsOf: [.bearer, .tokenHeader, .queryToken])
 

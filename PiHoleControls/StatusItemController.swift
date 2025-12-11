@@ -112,14 +112,14 @@ final class StatusItemController {
     }
 
     private func statusImage() -> (image: NSImage?, alpha: CGFloat) {
-        // Keep unknown state icon if we truly do not know.
-        guard let enabled = store.isBlockingEnabled else {
-            return (NSImage(systemSymbolName: "questionmark.circle", accessibilityDescription: "Pi-hole")?.settingTemplate(true), 1)
-        }
-
         let baseImage = NSImage(named: "MenuIcon")?
             .trimmedToAlphaBounds()
             .resizedForStatusBar(maxDimension: 15, template: true)
+
+        // Show normal icon with reduced opacity for unknown/loading state
+        guard let enabled = store.isBlockingEnabled else {
+            return (baseImage, 0.5)
+        }
 
         return (baseImage, enabled ? 1 : 0.35)
     }
