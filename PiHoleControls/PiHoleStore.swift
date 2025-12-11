@@ -18,6 +18,7 @@ final class PiHoleStore: ObservableObject {
 
     // Auto refresh
     private var refreshTask: Task<Void, Never>?
+    private var followUpRefreshTask: Task<Void, Never>?
     private var countdownTimer: Timer?
     private let refreshIntervalSeconds: TimeInterval = 20
 
@@ -148,9 +149,11 @@ final class PiHoleStore: ObservableObject {
     }
 
     private func scheduleFollowUpRefresh() {
-        Task { @MainActor in
+        followUpRefreshTask?.cancel()
+        followUpRefreshTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 800_000_000) // 0.8s
-            await refreshStatusAsync()
+            guard let self, !Task.isCancelled else { return }
+            await self.refreshStatusAsync()
         }
     }
 
@@ -159,10 +162,10 @@ final class PiHoleStore: ObservableObject {
     func startAutoRefresh() {
         stopAutoRefresh()
         refreshTask = Task { [weak self] in
-            guard let self else { return }
             while !Task.isCancelled {
+                guard let self else { return }
                 await self.refreshStatusAsync()
-                try? await Task.sleep(nanoseconds: UInt64(refreshIntervalSeconds * 1_000_000_000))
+                try? await Task.sleep(nanoseconds: UInt64(self.refreshIntervalSeconds * 1_000_000_000))
             }
         }
     }
@@ -184,8 +187,7 @@ final class PiHoleStore: ObservableObject {
             return
         }
 
-        countdownTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            // Ensure mutations happen on the main actor
+        let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 guard let remaining = self.remainingDisableSeconds else {
@@ -200,7 +202,8 @@ final class PiHoleStore: ObservableObject {
                 }
             }
         }
-        RunLoop.main.add(countdownTimer!, forMode: .common)
+        RunLoop.main.add(timer, forMode: .common)
+        countdownTimer = timer
     }
 
     private func handleDisableCountdownFinished() {
