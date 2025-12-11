@@ -17,6 +17,14 @@ struct ContentView: View {
     @State private var showSettings = false
     @State private var selectedDisableOption: DisableOption = .minutes(5)
     @State private var appearAnimation = false
+    @State private var statusHeight: CGFloat = 0
+    @State private var settingsHeight: CGFloat = 0
+
+    private var containerHeight: CGFloat {
+        let active = showSettings ? settingsHeight : statusHeight
+        return max(active, 1)
+    }
+
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -29,6 +37,7 @@ struct ContentView: View {
                 onDisable: { dismissMenu?() }
             )
             .frame(width: 300)
+            .background(HeightReader { statusHeight = $0 })
             .offset(x: showSettings ? -300 : 0)
             .opacity(showSettings ? 0 : 1)
 
@@ -38,10 +47,11 @@ struct ContentView: View {
                 onBack: { withAnimation(.easeOut(duration: 0.35)) { showSettings = false } }
             )
             .frame(width: 300)
+            .background(HeightReader { settingsHeight = $0 })
             .offset(x: showSettings ? 0 : 300)
             .opacity(showSettings ? 1 : 0)
         }
-        .frame(width: 300)
+        .frame(width: 300, height: containerHeight)
         .background(.ultraThinMaterial)
         .clipped()
         .animation(.easeOut(duration: 0.35), value: showSettings)
@@ -95,16 +105,21 @@ struct ContentView: View {
     }
 }
 
-// MARK: - Preference Keys for Dynamic Height
+// MARK: - View Height Reader
 
-private struct StatusHeightKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
+private struct HeightReader: View {
+    var onChange: (CGFloat) -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            Color.clear
+                .preference(key: ViewHeightKey.self, value: proxy.size.height)
+        }
+        .onPreferenceChange(ViewHeightKey.self, perform: onChange)
     }
 }
 
-private struct SettingsHeightKey: PreferenceKey {
+private struct ViewHeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
@@ -129,17 +144,18 @@ private struct StatusContentView: View {
 
             actionSection
                 .padding(.horizontal, 16)
-                .padding(.bottom, 20)
-
-            Spacer()
-
+                .padding(.bottom, 12)
+ 
+            Spacer(minLength: 0)
+ 
             Divider()
                 .opacity(0.5)
-
+ 
             footerButtons
                 .padding(.horizontal, 8)
                 .padding(.vertical, 6)
         }
+
     }
 
     // MARK: - Status Card
