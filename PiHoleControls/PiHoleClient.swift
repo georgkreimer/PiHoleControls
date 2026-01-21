@@ -14,8 +14,28 @@ struct PiHoleClient {
 
     enum PiHoleError: Error {
         case invalidURL
-        case invalidResponse(statusCode: Int?, bodyPreview: String?, endpoint: String?)
+        case invalidResponse(
+            statusCode: Int?,
+            bodyPreview: String?,
+            endpoint: String?,
+            diagnostics: LegacyErrorDiagnostics?
+        )
         case notConfigured
+    }
+
+    struct LegacyErrorDiagnostics: Equatable {
+        let method: String
+        let endpoint: String
+        let statusCode: Int
+        let action: String
+        let authMode: String
+        let tokenLooksLikeAppPassword: Bool
+    }
+
+    private enum LegacyAction: String {
+        case statusRefresh = "status refresh"
+        case enableBlocking = "enable blocking"
+        case disableBlocking = "disable blocking"
     }
 
     private enum AuthMode {
@@ -40,6 +60,34 @@ struct PiHoleClient {
             return SessionAuth(sid: cached.sid, csrf: cached.csrf)
         }
         return nil
+    }
+
+    private var tokenLooksLikeLegacyToken: Bool {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count == 32 else { return false }
+        let hexDigits = CharacterSet(charactersIn: "0123456789abcdefABCDEF")
+        return trimmed.unicodeScalars.allSatisfy { hexDigits.contains($0) }
+    }
+
+    private var tokenLooksLikeAppPassword: Bool {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if tokenLooksLikeLegacyToken { return false }
+        return trimmed.count >= 40
+    }
+
+    private func legacyDiagnosticsIfNeeded(
+        statusCode: Int,
+        action: LegacyAction
+    ) -> LegacyErrorDiagnostics? {
+        guard statusCode == 500 else { return nil }
+        return LegacyErrorDiagnostics(
+            method: "GET",
+            endpoint: "admin/api.php",
+            statusCode: statusCode,
+            action: action.rawValue,
+            authMode: "query token",
+            tokenLooksLikeAppPassword: tokenLooksLikeAppPassword
+        )
     }
 
     private func cacheSession(_ session: SessionAuth) async {
@@ -130,10 +178,9 @@ struct PiHoleClient {
 
     init?(host: String, token: String, allowSelfSignedCert: Bool = false) {
         guard !host.isEmpty, !token.isEmpty else { return nil }
-        var hostString = host
-        if !hostString.hasPrefix("http://") && !hostString.hasPrefix("https://") {
-            hostString = "http://" + hostString
-        }
+        let hostString = host
+        let hasScheme = hostString.hasPrefix("http://") || hostString.hasPrefix("https://")
+        guard hasScheme else { return nil }
         guard let rawURL = URL(string: hostString),
             var comps = URLComponents(url: rawURL, resolvingAgainstBaseURL: false),
             let hostOnly = comps.host
@@ -160,6 +207,24 @@ struct PiHoleClient {
 
     /// Build and send a request with flexible auth modes (Bearer header, Token header, or query token).
     private func sendRequest(
+        path: String,
+        queryItems: [URLQueryItem],
+        authMode: AuthMode,
+        method: String = "GET",
+        jsonBody: [String: Any]? = nil
+    ) async throws -> (Data, HTTPURLResponse) {
+        try await sendRequestUsing(
+            baseURL: baseURL,
+            path: path,
+            queryItems: queryItems,
+            authMode: authMode,
+            method: method,
+            jsonBody: jsonBody
+        )
+    }
+
+    private func sendRequestUsing(
+        baseURL: URL,
         path: String,
         queryItems: [URLQueryItem],
         authMode: AuthMode,
@@ -217,13 +282,21 @@ struct PiHoleClient {
 
         let (data, response) = try await urlSession().data(for: request)
         guard let http = response as? HTTPURLResponse else {
-            throw PiHoleError.invalidResponse(statusCode: nil, bodyPreview: nil, endpoint: url.path)
+            throw PiHoleError.invalidResponse(
+                statusCode: nil,
+                bodyPreview: nil,
+                endpoint: url.path,
+                diagnostics: nil
+            )
         }
         return (data, http)
     }
 
     /// Legacy Pi-hole v5 `/admin/api.php` with auth query (used after v6 attempts fail).
-    private func requestLegacy(queryItems: [URLQueryItem]) async throws -> (Data, HTTPURLResponse) {
+    private func requestLegacy(
+        queryItems: [URLQueryItem],
+        action: LegacyAction
+    ) async throws -> (Data, HTTPURLResponse) {
         var lastError: PiHoleError = .invalidURL
         do {
             let (data, response) = try await sendRequest(
@@ -233,8 +306,14 @@ struct PiHoleClient {
             }
             let preview = String(data: data, encoding: .utf8)?.prefix(300)
             lastError = .invalidResponse(
-                statusCode: response.statusCode, bodyPreview: preview.map(String.init),
-                endpoint: "admin/api.php")
+                statusCode: response.statusCode,
+                bodyPreview: preview.map(String.init),
+                endpoint: "admin/api.php",
+                diagnostics: legacyDiagnosticsIfNeeded(
+                    statusCode: response.statusCode,
+                    action: action
+                )
+            )
             throw lastError
         } catch let err as PiHoleError {
             lastError = err
@@ -293,7 +372,11 @@ struct PiHoleClient {
         guard response.statusCode == 200 else {
             let preview = String(data: data, encoding: .utf8).map { String($0.prefix(300)) }
             throw PiHoleError.invalidResponse(
-                statusCode: response.statusCode, bodyPreview: preview, endpoint: "api/auth")
+                statusCode: response.statusCode,
+                bodyPreview: preview,
+                endpoint: "api/auth",
+                diagnostics: nil
+            )
         }
         struct AuthSession: Decodable {
             let valid: Bool?
@@ -308,7 +391,9 @@ struct PiHoleClient {
             throw PiHoleError.invalidResponse(
                 statusCode: response.statusCode,
                 bodyPreview: String(data: data, encoding: .utf8).map { String($0.prefix(300)) },
-                endpoint: "api/auth")
+                endpoint: "api/auth",
+                diagnostics: nil
+            )
         }
         let csrf = decoded.session.csff ?? decoded.session.csrf
         return SessionAuth(sid: sid, csrf: csrf)
@@ -334,7 +419,11 @@ struct PiHoleClient {
                             String($0.prefix(300))
                         }
                         let err = PiHoleError.invalidResponse(
-                            statusCode: response.statusCode, bodyPreview: preview, endpoint: path)
+                            statusCode: response.statusCode,
+                            bodyPreview: preview,
+                            endpoint: path,
+                            diagnostics: nil
+                        )
                         lastError = err
                         throw err
                     }
@@ -344,20 +433,32 @@ struct PiHoleClient {
                             String($0.prefix(300))
                         }
                         lastAuthError = .invalidResponse(
-                            statusCode: response.statusCode, bodyPreview: preview, endpoint: path)
+                            statusCode: response.statusCode,
+                            bodyPreview: preview,
+                            endpoint: path,
+                            diagnostics: nil
+                        )
                     } else if response.statusCode == 404 {
                         let preview = String(data: data, encoding: .utf8).map {
                             String($0.prefix(300))
                         }
                         lastError = .invalidResponse(
-                            statusCode: response.statusCode, bodyPreview: preview, endpoint: path)
+                            statusCode: response.statusCode,
+                            bodyPreview: preview,
+                            endpoint: path,
+                            diagnostics: nil
+                        )
                         pathNotFoundError = lastError
                     } else {
                         let preview = String(data: data, encoding: .utf8).map {
                             String($0.prefix(300))
                         }
                         let err = PiHoleError.invalidResponse(
-                            statusCode: response.statusCode, bodyPreview: preview, endpoint: path)
+                            statusCode: response.statusCode,
+                            bodyPreview: preview,
+                            endpoint: path,
+                            diagnostics: nil
+                        )
                         lastError = err
                         throw err
                     }
@@ -373,8 +474,11 @@ struct PiHoleClient {
                                 String($0.prefix(300))
                             }
                             let err = PiHoleError.invalidResponse(
-                                statusCode: response.statusCode, bodyPreview: preview,
-                                endpoint: path)
+                                statusCode: response.statusCode,
+                                bodyPreview: preview,
+                                endpoint: path,
+                                diagnostics: nil
+                            )
                             lastError = err
                             throw err
                         }
@@ -384,8 +488,11 @@ struct PiHoleClient {
                                 String($0.prefix(300))
                             }
                             lastAuthError = .invalidResponse(
-                                statusCode: response.statusCode, bodyPreview: preview,
-                                endpoint: path)
+                                statusCode: response.statusCode,
+                                bodyPreview: preview,
+                                endpoint: path,
+                                diagnostics: nil
+                            )
                             continue
                         }
 
@@ -394,8 +501,11 @@ struct PiHoleClient {
                                 String($0.prefix(300))
                             }
                             lastError = .invalidResponse(
-                                statusCode: response.statusCode, bodyPreview: preview,
-                                endpoint: path)
+                                statusCode: response.statusCode,
+                                bodyPreview: preview,
+                                endpoint: path,
+                                diagnostics: nil
+                            )
                             pathNotFoundError = lastError
                             break
                         }
@@ -404,7 +514,11 @@ struct PiHoleClient {
                             String($0.prefix(300))
                         }
                         let err = PiHoleError.invalidResponse(
-                            statusCode: response.statusCode, bodyPreview: preview, endpoint: path)
+                            statusCode: response.statusCode,
+                            bodyPreview: preview,
+                            endpoint: path,
+                            diagnostics: nil
+                        )
                         lastError = err
                         throw err
                     }
@@ -419,8 +533,14 @@ struct PiHoleClient {
                     lastError = lastAuthError
                     throw lastAuthError
                 } else {
-                    lastError = .invalidResponse(statusCode: nil, bodyPreview: nil, endpoint: path)
-                    throw lastError!
+                    let fallbackError = PiHoleError.invalidResponse(
+                        statusCode: nil,
+                        bodyPreview: nil,
+                        endpoint: path,
+                        diagnostics: nil
+                    )
+                    lastError = fallbackError
+                    throw fallbackError
                 }
             } catch let err as PiHoleError {
                 lastError = err
@@ -457,8 +577,11 @@ struct PiHoleClient {
                     } else {
                         let preview = String(data: data, encoding: .utf8)?.prefix(300)
                         lastError = .invalidResponse(
-                            statusCode: response.statusCode, bodyPreview: preview.map(String.init),
-                            endpoint: attempt.0)
+                            statusCode: response.statusCode,
+                            bodyPreview: preview.map(String.init),
+                            endpoint: attempt.0,
+                            diagnostics: nil
+                        )
                         break
                     }
                 }
@@ -473,8 +596,11 @@ struct PiHoleClient {
                     }
                     let preview = String(data: data, encoding: .utf8)?.prefix(300)
                     lastError = .invalidResponse(
-                        statusCode: response.statusCode, bodyPreview: preview.map(String.init),
-                        endpoint: attempt.0)
+                        statusCode: response.statusCode,
+                        bodyPreview: preview.map(String.init),
+                        endpoint: attempt.0,
+                        diagnostics: nil
+                    )
                     break
                 }
             } catch let err as PiHoleError {
@@ -512,8 +638,11 @@ struct PiHoleClient {
                     } else {
                         let preview = String(data: data, encoding: .utf8)?.prefix(300)
                         lastError = .invalidResponse(
-                            statusCode: response.statusCode, bodyPreview: preview.map(String.init),
-                            endpoint: attempt.0)
+                            statusCode: response.statusCode,
+                            bodyPreview: preview.map(String.init),
+                            endpoint: attempt.0,
+                            diagnostics: nil
+                        )
                         break
                     }
                 }
@@ -528,8 +657,11 @@ struct PiHoleClient {
                     }
                     let preview = String(data: data, encoding: .utf8)?.prefix(300)
                     lastError = .invalidResponse(
-                        statusCode: response.statusCode, bodyPreview: preview.map(String.init),
-                        endpoint: attempt.0)
+                        statusCode: response.statusCode,
+                        bodyPreview: preview.map(String.init),
+                        endpoint: attempt.0,
+                        diagnostics: nil
+                    )
                     break
                 }
             } catch let err as PiHoleError {
@@ -562,7 +694,7 @@ struct PiHoleClient {
         } catch let err as PiHoleError {
             // Only fall back to legacy if v6 endpoint is missing (404). Otherwise surface the v6 error.
             if !allowLegacyFallback { throw err }
-            if case .invalidResponse(let statusCode, _, _) = err, statusCode == 404 {
+            if case .invalidResponse(let statusCode, _, _, _) = err, statusCode == 404 {
                 // Only fall back to legacy when v6 endpoints are missing.
             } else {
                 throw err
@@ -570,9 +702,12 @@ struct PiHoleClient {
         }
 
         // Legacy v5 fallback
-        let (data, response) = try await requestLegacy(queryItems: [
-            URLQueryItem(name: "status", value: nil)
-        ])
+        let (data, response) = try await requestLegacy(
+            queryItems: [
+                URLQueryItem(name: "status", value: nil)
+            ],
+            action: .statusRefresh
+        )
         struct StatusResponse: Decodable { let status: String }
         do {
             let decoded = try JSONDecoder().decode(StatusResponse.self, from: data)
@@ -582,7 +717,12 @@ struct PiHoleClient {
             throw PiHoleError.invalidResponse(
                 statusCode: response.statusCode,
                 bodyPreview: bodyPreview.map(String.init),
-                endpoint: "admin/api.php")
+                endpoint: "admin/api.php",
+                diagnostics: legacyDiagnosticsIfNeeded(
+                    statusCode: response.statusCode,
+                    action: .statusRefresh
+                )
+            )
         }
     }
 
@@ -591,12 +731,22 @@ struct PiHoleClient {
         if (try? await enableV6()) == true { return }
 
         // Legacy v5 fallback
-        let (_, response) = try await requestLegacy(queryItems: [
-            URLQueryItem(name: "enable", value: nil)
-        ])
+        let (_, response) = try await requestLegacy(
+            queryItems: [
+                URLQueryItem(name: "enable", value: nil)
+            ],
+            action: .enableBlocking
+        )
         guard response.statusCode == 200 else {
             throw PiHoleError.invalidResponse(
-                statusCode: response.statusCode, bodyPreview: nil, endpoint: "admin/api.php")
+                statusCode: response.statusCode,
+                bodyPreview: nil,
+                endpoint: "admin/api.php",
+                diagnostics: legacyDiagnosticsIfNeeded(
+                    statusCode: response.statusCode,
+                    action: .enableBlocking
+                )
+            )
         }
     }
 
@@ -611,10 +761,17 @@ struct PiHoleClient {
         } else {
             items = [URLQueryItem(name: "disable", value: nil)]
         }
-        let (_, response) = try await requestLegacy(queryItems: items)
+        let (_, response) = try await requestLegacy(queryItems: items, action: .disableBlocking)
         guard response.statusCode == 200 else {
             throw PiHoleError.invalidResponse(
-                statusCode: response.statusCode, bodyPreview: nil, endpoint: "admin/api.php")
+                statusCode: response.statusCode,
+                bodyPreview: nil,
+                endpoint: "admin/api.php",
+                diagnostics: legacyDiagnosticsIfNeeded(
+                    statusCode: response.statusCode,
+                    action: .disableBlocking
+                )
+            )
         }
     }
 }
@@ -633,6 +790,20 @@ private final class IgnoreSelfSignedCertificateDelegate: NSObject, URLSessionDel
     }
 }
 
+extension PiHoleClient.PiHoleError {
+    var legacyDiagnostics: PiHoleClient.LegacyErrorDiagnostics? {
+        if case .invalidResponse(_, _, _, let diagnostics) = self {
+            return diagnostics
+        }
+        return nil
+    }
+
+    var isLegacyServerError: Bool {
+        guard let diagnostics = legacyDiagnostics else { return false }
+        return diagnostics.endpoint == "admin/api.php" && diagnostics.statusCode == 500
+    }
+}
+
 // MARK: - Error descriptions for UI
 extension PiHoleClient.PiHoleError: LocalizedError {
     public var errorDescription: String? {
@@ -642,11 +813,20 @@ extension PiHoleClient.PiHoleError: LocalizedError {
                 "Malformed Pi-hole URL. Include http:// or https:// and avoid extra paths (use the base host/port only)."
         case .notConfigured:
             return "Enter host and API token in Settings first."
-        case .invalidResponse(let statusCode, let bodyPreview, let endpoint):
+        case .invalidResponse(let statusCode, _, let endpoint, let diagnostics):
+            // Note: bodyPreview is intentionally excluded to avoid exposing sensitive server responses
             var base = "Pi-hole API returned an error"
             if let code = statusCode { base += " (HTTP \(code))" }
             if let endpoint { base += "\nEndpoint: \(endpoint)" }
-            if let body = bodyPreview { base += "\nServer said: \(body)" }
+            if let diagnostics {
+                base += "\nDiagnostics: action=\(diagnostics.action), method=\(diagnostics.method), auth=\(diagnostics.authMode), status=\(diagnostics.statusCode)"
+            }
+            if let diagnostics, diagnostics.statusCode == 500, diagnostics.endpoint == "admin/api.php" {
+                base += "\nNext steps:\n- Verify Pi-hole is v5 (legacy API) or upgrade to v6.\n- Confirm the API token is the legacy token (not an app password).\n- Check server health and that /admin/api.php is reachable."
+                if diagnostics.tokenLooksLikeAppPassword {
+                    base += "\nNote: Your token looks like a v6 app password, which the legacy API does not accept."
+                }
+            }
             return base
         }
     }

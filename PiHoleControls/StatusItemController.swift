@@ -22,6 +22,13 @@ final class StatusItemController {
     private var statusViewHeightConstraint: NSLayoutConstraint?
     private let statusViewVerticalOffset: CGFloat = -2
 
+    /// Cached processed menu bar icon - computed once at init
+    private let cachedMenuIcon: NSImage? = {
+        NSImage(named: "MenuIcon")?
+            .trimmedToAlphaBounds()
+            .resizedForStatusBar(maxDimension: 15, template: true)
+    }()
+
     init(store: PiHoleStore) {
         self.store = store
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -112,9 +119,8 @@ final class StatusItemController {
     }
 
     private func statusImage() -> (image: NSImage?, alpha: CGFloat) {
-        let baseImage = NSImage(named: "MenuIcon")?
-            .trimmedToAlphaBounds()
-            .resizedForStatusBar(maxDimension: 15, template: true)
+        // Use cached icon instead of reprocessing each time
+        let baseImage = cachedMenuIcon
 
         // Show normal icon with reduced opacity for unknown/loading state
         guard let enabled = store.isBlockingEnabled else {
@@ -233,12 +239,6 @@ private extension NSImage {
         return copy
     }
 
-    func settingTemplate(_ isTemplate: Bool) -> NSImage {
-        let copy = self.copy() as? NSImage ?? self
-        copy.isTemplate = isTemplate
-        return copy
-    }
-
     func trimmedToAlphaBounds() -> NSImage {
         guard let cgImage = self.cgImage(forProposedRect: nil, context: nil, hints: nil),
               let data = cgImage.dataProvider?.data else { return self }
@@ -287,16 +287,5 @@ private extension NSImage {
         let trimmed = NSImage(cgImage: cropped, size: NSSize(width: rect.width, height: rect.height))
         trimmed.isTemplate = self.isTemplate
         return trimmed
-    }
-
-    func withAlpha(_ alpha: CGFloat) -> NSImage {
-        let clampedAlpha = max(0, min(1, alpha))
-        let result = NSImage(size: size)
-        result.isTemplate = false
-        result.lockFocus()
-        let rect = NSRect(origin: .zero, size: size)
-        draw(in: rect, from: .zero, operation: .sourceOver, fraction: clampedAlpha)
-        result.unlockFocus()
-        return result
     }
 }

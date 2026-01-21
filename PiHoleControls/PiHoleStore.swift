@@ -5,6 +5,9 @@ import Network
 
 @MainActor
 final class PiHoleStore: ObservableObject {
+    /// Factory closure type for creating Pi-hole clients
+    typealias ClientFactory = (String, String, Bool) -> (any PiHoleClientProtocol)?
+
     // Settings (host stays in AppStorage, token moves to Keychain)
     @AppStorage("piholeHost") var host: String = "pi.hole"
     @AppStorage("allowSelfSignedCert") var allowSelfSignedCert: Bool = false
@@ -40,18 +43,30 @@ final class PiHoleStore: ObservableObject {
     // Network monitoring
     private let networkMonitor = NWPathMonitor()
     private let networkMonitorQueue = DispatchQueue(label: "NetworkMonitor")
+    private var networkDebounceTask: Task<Void, Never>?
+    private let networkDebounceInterval: TimeInterval = 0.5
+
+    // Dependency injection for testing
+    private let makeClientFn: ClientFactory
 
     var isConfigured: Bool { !host.isEmpty && !token.isEmpty }
 
-    init() {
+    /// Default client factory that creates real PiHoleClient instances
+    static let defaultClientFactory: ClientFactory = { host, token, allowSelfSigned in
+        PiHoleClient(host: host, token: token, allowSelfSignedCert: allowSelfSigned)
+    }
+
+    init(clientFactory: ClientFactory? = nil) {
+        self.makeClientFn = clientFactory ?? Self.defaultClientFactory
+
         // Load token from Keychain on init
         if let savedToken = KeychainHelper.retrieve(key: Self.tokenKeychainKey) {
             token = savedToken
         }
-        
+
         // Migrate from old AppStorage if exists
         migrateTokenFromAppStorage()
-        
+
         // Start network monitoring
         startNetworkMonitoring()
     }
@@ -63,13 +78,23 @@ final class PiHoleStore: ObservableObject {
     // MARK: - Token Migration
 
     private func migrateTokenFromAppStorage() {
+        // Skip if Keychain already has a token (already migrated or set via UI)
+        if KeychainHelper.retrieve(key: Self.tokenKeychainKey) != nil {
+            // Clean up old AppStorage key if it exists
+            UserDefaults.standard.removeObject(forKey: "piholeToken")
+            return
+        }
+
         let oldTokenKey = "piholeToken"
         if let oldToken = UserDefaults.standard.string(forKey: oldTokenKey), !oldToken.isEmpty {
-            // Save to Keychain
-            try? KeychainHelper.save(key: Self.tokenKeychainKey, value: oldToken)
-            token = oldToken
-            // Remove from UserDefaults
-            UserDefaults.standard.removeObject(forKey: oldTokenKey)
+            // Save to Keychain first, only remove from UserDefaults if save succeeds
+            do {
+                try KeychainHelper.save(key: Self.tokenKeychainKey, value: oldToken)
+                token = oldToken
+                UserDefaults.standard.removeObject(forKey: oldTokenKey)
+            } catch {
+                // Migration failed - keep old token in UserDefaults for next attempt
+            }
         }
     }
 
@@ -81,14 +106,24 @@ final class PiHoleStore: ObservableObject {
                 guard let self else { return }
                 let wasAvailable = self.isNetworkAvailable
                 self.isNetworkAvailable = path.status == .satisfied
-                
-                // If network became available, trigger a refresh
+
+                // If network became available, trigger a debounced refresh
                 if !wasAvailable && self.isNetworkAvailable {
-                    self.refreshStatus()
+                    self.scheduleNetworkRefresh()
                 }
             }
         }
         networkMonitor.start(queue: networkMonitorQueue)
+    }
+
+    private func scheduleNetworkRefresh() {
+        networkDebounceTask?.cancel()
+        let debounceNanos = UInt64(networkDebounceInterval * 1_000_000_000)
+        networkDebounceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: debounceNanos)
+            guard !Task.isCancelled, let self else { return }
+            self.refreshStatus()
+        }
     }
 
     // MARK: - Menu bar helpers
@@ -118,10 +153,10 @@ final class PiHoleStore: ObservableObject {
 
     // MARK: - Client factory
 
-    private func makeClient() -> PiHoleClient? {
+    private func makeClient() -> (any PiHoleClientProtocol)? {
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        return PiHoleClient(host: trimmedHost, token: trimmedToken, allowSelfSignedCert: allowSelfSignedCert)
+        return makeClientFn(trimmedHost, trimmedToken, allowSelfSignedCert)
     }
 
     // MARK: - Public operations (fire-and-forget wrappers for UI)
@@ -156,9 +191,32 @@ final class PiHoleStore: ObservableObject {
         if loading { lastError = nil }
     }
 
-    private func requireClientOrFail() -> PiHoleClient? {
+    private func requireClientOrFail() -> (any PiHoleClientProtocol)? {
+        let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if trimmedToken.isEmpty,
+           let savedToken = KeychainHelper.retrieve(key: Self.tokenKeychainKey),
+           !savedToken.isEmpty {
+            token = savedToken
+            trimmedToken = savedToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        if trimmedHost.isEmpty && trimmedToken.isEmpty {
+            lastError = "Enter host and API token in Settings first."
+            return nil
+        }
+        if trimmedHost.isEmpty {
+            lastError = "Enter host in Settings first."
+            return nil
+        }
+        if trimmedToken.isEmpty {
+            lastError = "Enter API token in Settings first."
+            return nil
+        }
+
         guard let client = makeClient() else {
-            lastError = PiHoleClient.PiHoleError.notConfigured.localizedDescription
+            lastError = "Invalid host. Include http:// or https:// and avoid extra paths."
             return nil
         }
         return client
@@ -180,6 +238,9 @@ final class PiHoleStore: ObservableObject {
                 // Don't retry on configuration errors or if cancelled
                 if error is CancellationError { throw error }
                 if case PiHoleClient.PiHoleError.notConfigured = error { throw error }
+                if let apiError = error as? PiHoleClient.PiHoleError, apiError.isLegacyServerError {
+                    throw error
+                }
                 
                 // Last attempt, don't sleep
                 if attempt == maxAttempts - 1 { break }
@@ -196,34 +257,19 @@ final class PiHoleStore: ObservableObject {
     private func refreshStatusAsync() async {
         guard let client = requireClientOrFail() else { return }
         setLoading(true)
-        let startTime = Date()
-        let minimumLoadingDuration: TimeInterval = 2.0
-        
+        defer { setLoading(false) }
+
         do {
             let enabled = try await withRetry {
                 try await client.fetchStatus()
             }
-            
-            // Ensure loading state is visible for at least minimumLoadingDuration
-            let elapsed = Date().timeIntervalSince(startTime)
-            if elapsed < minimumLoadingDuration {
-                try? await Task.sleep(nanoseconds: UInt64((minimumLoadingDuration - elapsed) * 1_000_000_000))
-            }
-            
             isBlockingEnabled = enabled
             lastError = nil
             // If enabled, stop countdown; if disabled and we don't know remaining time, leave as is.
             if enabled { stopDisableCountdown() }
         } catch {
-            // Ensure loading state is visible for at least minimumLoadingDuration even on error
-            let elapsed = Date().timeIntervalSince(startTime)
-            if elapsed < minimumLoadingDuration {
-                try? await Task.sleep(nanoseconds: UInt64((minimumLoadingDuration - elapsed) * 1_000_000_000))
-            }
-            
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
-        setLoading(false)
     }
 
     private func enableBlockingAsync() async {

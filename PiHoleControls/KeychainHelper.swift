@@ -28,26 +28,48 @@ enum KeychainHelper {
         }
     }
     
-    /// Save a string value to the Keychain
+    /// Save a string value to the Keychain using atomic update-or-insert pattern
     static func save(key: String, value: String) throws {
+        // Empty value means delete from Keychain
+        if value.isEmpty {
+            try? delete(key: key)
+            return
+        }
+
         guard let data = value.data(using: .utf8) else { return }
-        
-        // Delete any existing item first
-        try? delete(key: key)
-        
+
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: key,
+            kSecAttrAccount as String: key
+        ]
+
+        let updateAttributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
         ]
-        
-        let status = SecItemAdd(query as CFDictionary, nil)
-        
-        guard status == errSecSuccess else {
-            throw KeychainError.unexpectedStatus(status)
+
+        // Try update first (atomic operation)
+        let updateStatus = SecItemUpdate(query as CFDictionary, updateAttributes as CFDictionary)
+
+        if updateStatus == errSecSuccess {
+            return
         }
+
+        // Item doesn't exist, add it (atomic operation)
+        if updateStatus == errSecItemNotFound {
+            var addQuery = query
+            addQuery[kSecValueData as String] = data
+            addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+
+            let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+            guard addStatus == errSecSuccess else {
+                throw KeychainError.unexpectedStatus(addStatus)
+            }
+            return
+        }
+
+        throw KeychainError.unexpectedStatus(updateStatus)
     }
     
     /// Retrieve a string value from the Keychain

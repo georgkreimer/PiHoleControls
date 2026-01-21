@@ -376,9 +376,16 @@ private struct SettingsContentView: View {
     let onBack: () -> Void
     @State private var testState: TestState = .idle
     @State private var appearAnimation = false
+    @State private var showSelfSignedWarning = false
 
     enum TestState: Equatable {
         case idle, loading, success, failure(String)
+    }
+
+    private var isHttpHost: Bool {
+        store.host.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("http://")
     }
 
     var body: some View {
@@ -526,7 +533,7 @@ private struct SettingsContentView: View {
                 SettingsTextField(
                     icon: "globe",
                     placeholder: "Host or URL",
-                    hint: "pi.hole or 192.168.1.2:8080",
+                    hint: "http://pi.hole or http://192.168.1.2:8080",
                     text: $store.host
                 )
 
@@ -536,23 +543,67 @@ private struct SettingsContentView: View {
                     text: $store.token
                 )
             }
-
-            // Toggle with better styling
-            HStack {
-                Toggle(isOn: $store.allowSelfSignedCert) {
-                    HStack(spacing: 8) {
-                        Image(systemName: "lock.shield")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(store.allowSelfSignedCert ? .orange : .secondary)
-                        Text("Allow self-signed certificates")
-                            .font(.system(size: 11, weight: .medium, design: .rounded))
-                            .foregroundStyle(.primary.opacity(0.8))
-                    }
+            Text("Include http:// or https://")
+                .font(.system(size: 9, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+            if isHttpHost {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 9))
+                    Text("Insecure: HTTP connections are unencrypted")
+                        .font(.system(size: 9, weight: .medium))
                 }
-                .toggleStyle(.switch)
-                .controlSize(.mini)
+                .foregroundStyle(.red)
+                .padding(.leading, 2)
+            }
+
+            // Toggle with security warning
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Toggle(isOn: Binding(
+                        get: { store.allowSelfSignedCert },
+                        set: { newValue in
+                            if newValue {
+                                showSelfSignedWarning = true
+                            } else {
+                                store.allowSelfSignedCert = false
+                            }
+                        }
+                    )) {
+                        HStack(spacing: 8) {
+                            Image(systemName: "lock.shield")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(store.allowSelfSignedCert ? .orange : .secondary)
+                            Text("Allow self-signed certificates")
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                .foregroundStyle(.primary.opacity(0.8))
+                        }
+                    }
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                }
+
+                // Persistent warning when enabled
+                if store.allowSelfSignedCert {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 9))
+                        Text("Insecure: Certificate validation disabled")
+                            .font(.system(size: 9, weight: .medium))
+                    }
+                    .foregroundStyle(.red)
+                    .padding(.leading, 2)
+                }
             }
             .padding(.top, 4)
+            .alert("Security Warning", isPresented: $showSelfSignedWarning) {
+                Button("Enable Anyway", role: .destructive) {
+                    store.allowSelfSignedCert = true
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Disabling certificate validation makes your connection vulnerable to man-in-the-middle attacks. Only enable this if you understand the risks and trust your network.")
+            }
         }
         .padding(14)
         .background {

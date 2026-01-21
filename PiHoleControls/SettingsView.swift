@@ -13,6 +13,7 @@ struct SettingsView: View {
     @EnvironmentObject var store: PiHoleStore
     @State private var testState: TestState = .idle
     @State private var appearAnimation = false
+    @State private var showSelfSignedWarning = false
 
     enum TestState: Equatable {
         case idle, loading, success, failure(String)
@@ -108,24 +109,66 @@ struct SettingsView: View {
                 )
             }
 
-            Text("Example: pi.hole or 192.168.1.2:8080")
+            Text("Example: http://pi.hole or http://192.168.1.2:8080")
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(.secondary)
+            Text("Include http:// or https://")
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .foregroundStyle(.secondary)
+            if isHttpHost {
+                HStack(spacing: 4) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 10))
+                    Text("Insecure: HTTP connections are unencrypted")
+                        .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundStyle(.red)
+            }
 
             Divider()
                 .opacity(0.5)
 
-            Toggle(isOn: $store.allowSelfSignedCert) {
-                HStack(spacing: 8) {
-                    Image(systemName: "lock.shield")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                    Text("Allow self-signed certificates")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle(isOn: Binding(
+                    get: { store.allowSelfSignedCert },
+                    set: { newValue in
+                        if newValue {
+                            showSelfSignedWarning = true
+                        } else {
+                            store.allowSelfSignedCert = false
+                        }
+                    }
+                )) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "lock.shield")
+                            .font(.system(size: 12))
+                            .foregroundStyle(store.allowSelfSignedCert ? .orange : .secondary)
+                        Text("Allow self-signed certificates")
+                            .font(.system(size: 12, weight: .medium, design: .rounded))
+                    }
+                }
+                .toggleStyle(.switch)
+                .controlSize(.small)
+
+                // Persistent warning when enabled
+                if store.allowSelfSignedCert {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                        Text("Insecure: Certificate validation disabled")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundStyle(.red)
                 }
             }
-            .toggleStyle(.switch)
-            .controlSize(.small)
+            .alert("Security Warning", isPresented: $showSelfSignedWarning) {
+                Button("Enable Anyway", role: .destructive) {
+                    store.allowSelfSignedCert = true
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Disabling certificate validation makes your connection vulnerable to man-in-the-middle attacks. Only enable this if you understand the risks and trust your network.")
+            }
         }
         .padding(16)
         .background {
@@ -386,6 +429,12 @@ private struct SettingsSecureField: View {
 // MARK: - Helpers
 
 private extension SettingsView {
+    var isHttpHost: Bool {
+        store.host.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("http://")
+    }
+
     @MainActor
     func runConnectionTest() async {
         let sanitizedHost = store.host.trimmingCharacters(in: .whitespacesAndNewlines)
