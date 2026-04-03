@@ -109,13 +109,13 @@ struct SettingsView: View {
                 )
             }
 
-            Text("Example: http://pi.hole or http://192.168.1.2:8080")
+            Text("Example: https://pi.hole or https://192.168.1.2:8080")
                 .font(.system(size: 11, weight: .medium, design: .rounded))
                 .foregroundStyle(.secondary)
             Text("Include http:// or https://")
                 .font(.system(size: 10, weight: .medium, design: .rounded))
                 .foregroundStyle(.secondary)
-            if isHttpHost {
+            if store.isHttpHost {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 10))
@@ -429,32 +429,14 @@ private struct SettingsSecureField: View {
 // MARK: - Helpers
 
 private extension SettingsView {
-    var isHttpHost: Bool {
-        store.host.trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .hasPrefix("http://")
-    }
-
     @MainActor
     func runConnectionTest() async {
-        let sanitizedHost = store.host.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sanitizedToken = store.token.trimmingCharacters(in: .whitespacesAndNewlines)
-        if sanitizedHost != store.host { store.host = sanitizedHost }
-        if sanitizedToken != store.token { store.token = sanitizedToken }
-
-        guard let client = PiHoleClient(
-            host: sanitizedHost,
-            token: sanitizedToken,
-            allowSelfSignedCert: store.allowSelfSignedCert
-        ) else {
-            testState = .failure("Enter a valid host and API token first.")
-            return
-        }
-        do {
-            _ = try await client.fetchStatus(allowLegacyFallback: false)
+        let result = await store.testConnection()
+        switch result {
+        case .success:
             testState = .success
-        } catch {
-            testState = .failure(friendlyMessage(for: error))
+        case .failure(let message):
+            testState = .failure(message)
         }
     }
 
@@ -469,13 +451,6 @@ private extension SettingsView {
         pasteboard.clearContents()
         pasteboard.setString(message, forType: .string)
     }
-}
-
-private func friendlyMessage(for error: Error) -> String {
-    if let localized = (error as? LocalizedError)?.errorDescription {
-        return localized
-    }
-    return error.localizedDescription
 }
 
 #Preview {

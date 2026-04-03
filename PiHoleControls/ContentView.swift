@@ -382,12 +382,6 @@ private struct SettingsContentView: View {
         case idle, loading, success, failure(String)
     }
 
-    private var isHttpHost: Bool {
-        store.host.trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-            .hasPrefix("http://")
-    }
-
     var body: some View {
         VStack(spacing: 0) {
             // Header
@@ -533,7 +527,7 @@ private struct SettingsContentView: View {
                 SettingsTextField(
                     icon: "globe",
                     placeholder: "Host or URL",
-                    hint: "http://pi.hole or http://192.168.1.2:8080",
+                    hint: "https://pi.hole or https://192.168.1.2:8080",
                     text: $store.host
                 )
 
@@ -546,7 +540,7 @@ private struct SettingsContentView: View {
             Text("Include http:// or https://")
                 .font(.system(size: 9, weight: .medium, design: .rounded))
                 .foregroundStyle(.secondary)
-            if isHttpHost {
+            if store.isHttpHost {
                 HStack(spacing: 4) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 9))
@@ -781,24 +775,11 @@ private struct SettingsContentView: View {
 
     @MainActor
     private func runConnectionTest() async {
-        let sanitizedHost = store.host.trimmingCharacters(in: .whitespacesAndNewlines)
-        let sanitizedToken = store.token.trimmingCharacters(in: .whitespacesAndNewlines)
-        if sanitizedHost != store.host { store.host = sanitizedHost }
-        if sanitizedToken != store.token { store.token = sanitizedToken }
-
-        guard let client = PiHoleClient(
-            host: sanitizedHost,
-            token: sanitizedToken,
-            allowSelfSignedCert: store.allowSelfSignedCert
-        ) else {
-            testState = .failure("Enter host and token first")
-            return
-        }
-        do {
-            _ = try await client.fetchStatus(allowLegacyFallback: false)
+        let result = await store.testConnection()
+        switch result {
+        case .success:
             testState = .success
-        } catch {
-            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        case .failure(let message):
             testState = .failure(String(message.prefix(80)))
         }
     }

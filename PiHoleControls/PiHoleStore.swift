@@ -9,7 +9,7 @@ final class PiHoleStore: ObservableObject {
     typealias ClientFactory = (String, String, Bool) -> (any PiHoleClientProtocol)?
 
     // Settings (host stays in AppStorage, token moves to Keychain)
-    @AppStorage("piholeHost") var host: String = "pi.hole"
+    @AppStorage("piholeHost") var host: String = ""
     @AppStorage("allowSelfSignedCert") var allowSelfSignedCert: Bool = false
     @AppStorage("defaultDisableMinutes") var defaultDisableMinutes: Int = 5
 
@@ -36,9 +36,9 @@ final class PiHoleStore: ObservableObject {
     private var countdownTimer: Timer?
     private let refreshIntervalSeconds: TimeInterval = 20
 
-    // Retry configuration
+    // Retry configuration (baseRetryDelay injectable for testing)
     private let maxRetryAttempts = 3
-    private let baseRetryDelay: TimeInterval = 1.0
+    let baseRetryDelay: TimeInterval
 
     // Network monitoring
     private let networkMonitor = NWPathMonitor()
@@ -56,8 +56,9 @@ final class PiHoleStore: ObservableObject {
         PiHoleClient(host: host, token: token, allowSelfSignedCert: allowSelfSigned)
     }
 
-    init(clientFactory: ClientFactory? = nil) {
+    init(clientFactory: ClientFactory? = nil, baseRetryDelay: TimeInterval = 1.0) {
         self.makeClientFn = clientFactory ?? Self.defaultClientFactory
+        self.baseRetryDelay = baseRetryDelay
 
         // Load token from Keychain on init
         if let savedToken = KeychainHelper.retrieve(key: Self.tokenKeychainKey) {
@@ -159,6 +160,37 @@ final class PiHoleStore: ObservableObject {
         return makeClientFn(trimmedHost, trimmedToken, allowSelfSignedCert)
     }
 
+    // MARK: - Connection test (used by settings UI)
+
+    enum ConnectionTestResult {
+        case success
+        case failure(String)
+    }
+
+    func testConnection() async -> ConnectionTestResult {
+        let sanitizedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
+        let sanitizedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        if sanitizedHost != host { host = sanitizedHost }
+        if sanitizedToken != token { token = sanitizedToken }
+
+        guard let client = makeClient() else {
+            return .failure("Enter a valid host and API token first.")
+        }
+        do {
+            _ = try await client.fetchStatus(allowLegacyFallback: false)
+            return .success
+        } catch {
+            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return .failure(message)
+        }
+    }
+
+    var isHttpHost: Bool {
+        host.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("http://")
+    }
+
     // MARK: - Public operations (fire-and-forget wrappers for UI)
 
     func toggleBlocking() {
@@ -193,14 +225,7 @@ final class PiHoleStore: ObservableObject {
 
     private func requireClientOrFail() -> (any PiHoleClientProtocol)? {
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
-        var trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if trimmedToken.isEmpty,
-           let savedToken = KeychainHelper.retrieve(key: Self.tokenKeychainKey),
-           !savedToken.isEmpty {
-            token = savedToken
-            trimmedToken = savedToken.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+        let trimmedToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
 
         if trimmedHost.isEmpty && trimmedToken.isEmpty {
             lastError = "Enter host and API token in Settings first."
@@ -254,7 +279,7 @@ final class PiHoleStore: ObservableObject {
         throw lastError ?? PiHoleClient.PiHoleError.invalidURL
     }
 
-    private func refreshStatusAsync() async {
+    func refreshStatusAsync() async {
         guard let client = requireClientOrFail() else { return }
         setLoading(true)
         defer { setLoading(false) }
@@ -272,7 +297,7 @@ final class PiHoleStore: ObservableObject {
         }
     }
 
-    private func enableBlockingAsync() async {
+    func enableBlockingAsync() async {
         guard let client = requireClientOrFail() else { return }
         setLoading(true)
         defer { setLoading(false) }
@@ -290,7 +315,7 @@ final class PiHoleStore: ObservableObject {
         }
     }
 
-    private func disableBlockingAsync(durationSeconds: Int?) async {
+    func disableBlockingAsync(durationSeconds: Int?) async {
         guard let client = requireClientOrFail() else { return }
         setLoading(true)
         defer { setLoading(false) }
@@ -352,7 +377,7 @@ final class PiHoleStore: ObservableObject {
         }
 
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 guard let remaining = self.remainingDisableSeconds else {
                     self.stopDisableCountdown()
