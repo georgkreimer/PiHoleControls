@@ -377,6 +377,7 @@ private struct SettingsContentView: View {
     @State private var testState: TestState = .idle
     @State private var appearAnimation = false
     @State private var showSelfSignedWarning = false
+    @AppStorage("showDockIcon") private var showDockIcon = false
 
     enum TestState: Equatable {
         case idle, loading, success, failure(String)
@@ -597,6 +598,29 @@ private struct SettingsContentView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Disabling certificate validation makes your connection vulnerable to man-in-the-middle attacks. Only enable this if you understand the risks and trust your network.")
+            }
+
+            Divider()
+                .opacity(0.5)
+
+            Toggle(isOn: $showDockIcon) {
+                HStack(spacing: 8) {
+                    Image(systemName: "dock.rectangle")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                    Text("Show dock icon")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                }
+            }
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .onChange(of: showDockIcon) {
+                NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
+                if showDockIcon {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) {
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                }
             }
         }
         .padding(14)
