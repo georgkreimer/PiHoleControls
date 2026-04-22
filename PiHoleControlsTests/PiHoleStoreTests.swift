@@ -15,10 +15,10 @@ struct PiHoleStoreTests {
 
     // MARK: - Test Helpers
 
-    /// Creates a store with a mock client factory
+    /// Creates a store with a mock client factory and zero retry delay for fast tests
     private func makeStore(mockClient: MockPiHoleClient) -> PiHoleStore {
-        let store = PiHoleStore(clientFactory: { _, _, _ in mockClient })
-        store.host = "test.pi.hole"
+        let store = PiHoleStore(clientFactory: { _, _, _ in mockClient }, baseRetryDelay: 0)
+        store.host = "http://test.pi.hole"
         store.token = "test-token"
         return store
     }
@@ -31,9 +31,7 @@ struct PiHoleStoreTests {
         mock.statusToReturn = true
         let store = makeStore(mockClient: mock)
 
-        store.refreshStatus()
-        // Allow async operation to complete
-        try await Task.sleep(nanoseconds: 100_000_000)
+        await store.refreshStatusAsync()
 
         #expect(store.isBlockingEnabled == true)
         #expect(store.lastError == nil)
@@ -46,8 +44,7 @@ struct PiHoleStoreTests {
         mock.statusToReturn = false
         let store = makeStore(mockClient: mock)
 
-        store.refreshStatus()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        await store.refreshStatusAsync()
 
         #expect(store.isBlockingEnabled == false)
         #expect(store.lastError == nil)
@@ -64,12 +61,12 @@ struct PiHoleStoreTests {
         )
         let store = makeStore(mockClient: mock)
 
-        store.refreshStatus()
-        // Wait longer due to retry mechanism with exponential backoff (1s + 2s + 4s)
-        try await Task.sleep(nanoseconds: 8_000_000_000)
+        await store.refreshStatusAsync()
 
         #expect(store.lastError != nil)
         #expect(store.lastError?.contains("500") == true)
+        // With zero retry delay and 3 attempts, all retries should complete instantly
+        #expect(mock.fetchStatusCallCount == 3)
     }
 
     @Test("Fetch status legacy 500 surfaces once")
@@ -90,8 +87,7 @@ struct PiHoleStoreTests {
         )
         let store = makeStore(mockClient: mock)
 
-        store.refreshStatus()
-        try await Task.sleep(nanoseconds: 300_000_000)
+        await store.refreshStatusAsync()
 
         #expect(store.isLoading == false)
         #expect(mock.fetchStatusCallCount == 1)
@@ -107,7 +103,7 @@ struct PiHoleStoreTests {
         store.isBlockingEnabled = true
 
         store.toggleBlocking()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 50_000_000)
 
         #expect(mock.disableBlockingCallCount >= 1)
     }
@@ -119,7 +115,7 @@ struct PiHoleStoreTests {
         store.isBlockingEnabled = false
 
         store.toggleBlocking()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 50_000_000)
 
         #expect(mock.enableBlockingCallCount >= 1)
     }
@@ -131,7 +127,7 @@ struct PiHoleStoreTests {
         store.isBlockingEnabled = nil
 
         store.toggleBlocking()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        try await Task.sleep(nanoseconds: 50_000_000)
 
         #expect(mock.fetchStatusCallCount >= 1)
         #expect(mock.enableBlockingCallCount == 0)
@@ -146,8 +142,7 @@ struct PiHoleStoreTests {
         let store = makeStore(mockClient: mock)
         store.isBlockingEnabled = false
 
-        store.enableBlocking()
-        try await Task.sleep(nanoseconds: 100_000_000)
+        await store.enableBlockingAsync()
 
         #expect(store.isBlockingEnabled == true)
         #expect(mock.enableBlockingCallCount >= 1)
@@ -159,8 +154,7 @@ struct PiHoleStoreTests {
         let store = makeStore(mockClient: mock)
         store.isBlockingEnabled = true
 
-        store.disableBlocking(durationSeconds: 300)
-        try await Task.sleep(nanoseconds: 100_000_000)
+        await store.disableBlockingAsync(durationSeconds: 300)
 
         #expect(store.isBlockingEnabled == false)
         #expect(mock.disableBlockingCallCount >= 1)

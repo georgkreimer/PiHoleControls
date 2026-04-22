@@ -24,6 +24,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // LSUIElement=YES hides dock icon by default. Show it only if user opted in.
+        if UserDefaults.standard.bool(forKey: "showDockIcon") {
+            NSApp.setActivationPolicy(.regular)
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) {
+                NSApp.activate(ignoringOtherApps: true)
+            }
+        }
+
         statusItemController = StatusItemController(store: store)
         store.refreshStatus()
         store.startAutoRefresh()

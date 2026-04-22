@@ -11,6 +11,7 @@ import SwiftUI
 import Combine
 
 /// Manages the status bar item and routes clicks to toggle blocking or open the popover menu.
+@MainActor
 final class StatusItemController {
     private let statusItem: NSStatusItem
     private let statusView: StatusItemView

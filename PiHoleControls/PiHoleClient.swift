@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import CryptoKit
 
 struct PiHoleClient {
     let baseURL: URL
@@ -52,7 +53,9 @@ struct PiHoleClient {
     }
 
     private var sessionCacheKey: String {
-        "\(baseURL.absoluteString)|\(token)"
+        let raw = "\(baseURL.absoluteString)|\(token)"
+        let hash = SHA256.hash(data: Data(raw.utf8))
+        return hash.map { String(format: "%02x", $0) }.joined()
     }
 
     private func cachedSession() async -> SessionAuth? {
@@ -99,13 +102,6 @@ struct PiHoleClient {
 
     private func invalidateCachedSession() async {
         await PiHoleSessionCache.shared.remove(key: sessionCacheKey)
-    }
-
-    private func ensureSessionAuth() async throws -> SessionAuth {
-        if let cached = await cachedSession() { return cached }
-        let session = try await createSessionAuth()
-        await cacheSession(session)
-        return session
     }
 
     private func createAndCacheSessionAuth() async throws -> SessionAuth {
@@ -206,25 +202,8 @@ struct PiHoleClient {
     }
 
     /// Build and send a request with flexible auth modes (Bearer header, Token header, or query token).
+    /// Build and send a request with flexible auth modes.
     private func sendRequest(
-        path: String,
-        queryItems: [URLQueryItem],
-        authMode: AuthMode,
-        method: String = "GET",
-        jsonBody: [String: Any]? = nil
-    ) async throws -> (Data, HTTPURLResponse) {
-        try await sendRequestUsing(
-            baseURL: baseURL,
-            path: path,
-            queryItems: queryItems,
-            authMode: authMode,
-            method: method,
-            jsonBody: jsonBody
-        )
-    }
-
-    private func sendRequestUsing(
-        baseURL: URL,
         path: String,
         queryItems: [URLQueryItem],
         authMode: AuthMode,
@@ -304,10 +283,9 @@ struct PiHoleClient {
             if response.statusCode == 200 {
                 return (data, response)
             }
-            let preview = String(data: data, encoding: .utf8)?.prefix(300)
             lastError = .invalidResponse(
                 statusCode: response.statusCode,
-                bodyPreview: preview.map(String.init),
+                bodyPreview: bodyPreview(from: data),
                 endpoint: "admin/api.php",
                 diagnostics: legacyDiagnosticsIfNeeded(
                     statusCode: response.statusCode,
@@ -320,6 +298,14 @@ struct PiHoleClient {
         }
 
         throw lastError
+    }
+
+    // MARK: - Helpers
+
+    private static let bodyPreviewMaxLength = 300
+
+    private func bodyPreview(from data: Data) -> String? {
+        String(data: data, encoding: .utf8).map { String($0.prefix(Self.bodyPreviewMaxLength)) }
     }
 
     // MARK: - v6-first helpers
@@ -370,14 +356,15 @@ struct PiHoleClient {
             method: "POST",
             jsonBody: body)
         guard response.statusCode == 200 else {
-            let preview = String(data: data, encoding: .utf8).map { String($0.prefix(300)) }
             throw PiHoleError.invalidResponse(
                 statusCode: response.statusCode,
-                bodyPreview: preview,
+                bodyPreview: bodyPreview(from: data),
                 endpoint: "api/auth",
                 diagnostics: nil
             )
         }
+        // Some Pi-hole v6 builds return the CSRF field as "csff" (server-side typo).
+        // We decode both and prefer "csff" when present for compatibility.
         struct AuthSession: Decodable {
             let valid: Bool?
             let sid: String?
@@ -390,7 +377,7 @@ struct PiHoleClient {
         else {
             throw PiHoleError.invalidResponse(
                 statusCode: response.statusCode,
-                bodyPreview: String(data: data, encoding: .utf8).map { String($0.prefix(300)) },
+                bodyPreview: bodyPreview(from: data),
                 endpoint: "api/auth",
                 diagnostics: nil
             )
@@ -399,210 +386,67 @@ struct PiHoleClient {
         return SessionAuth(sid: sid, csrf: csrf)
     }
 
-    private func fetchStatusV6() async throws -> Bool? {
-        // Pi-hole v6 exposes dns blocking at /api/dns/blocking; /api/status is not present on all builds.
-        let statusPaths = ["api/dns/blocking"]
-        var lastError: PiHoleError?
+    /// Sends a v6 API request trying all auth modes: session first, then bearer/tokenHeader/queryToken.
+    /// Returns the response from the first auth mode that doesn't return 401/403.
+    /// If all modes return 401/403, throws the last auth error.
+    private func requestV6WithAuthFallback(
+        path: String,
+        queryItems: [URLQueryItem] = [],
+        method: String = "GET",
+        jsonBody: [String: Any]? = nil
+    ) async throws -> (Data, HTTPURLResponse) {
+        var lastAuthError: PiHoleError?
 
-        for path in statusPaths {
-            do {
-                var lastAuthError: PiHoleError?
-                var pathNotFoundError: PiHoleError?
-
-                // Prefer session if available (works with app passwords), then fall back to other modes.
-                if await sessionAuthIfPossible() != nil {
-                    let (data, response) = try await sendRequestWithSessionRetry(
-                        path: path, queryItems: [])
-                    if response.statusCode == 200 {
-                        if let status = decodeV6Status(from: data) { return status }
-                        let preview = String(data: data, encoding: .utf8).map {
-                            String($0.prefix(300))
-                        }
-                        let err = PiHoleError.invalidResponse(
-                            statusCode: response.statusCode,
-                            bodyPreview: preview,
-                            endpoint: path,
-                            diagnostics: nil
-                        )
-                        lastError = err
-                        throw err
-                    }
-
-                    if response.statusCode == 401 || response.statusCode == 403 {
-                        let preview = String(data: data, encoding: .utf8).map {
-                            String($0.prefix(300))
-                        }
-                        lastAuthError = .invalidResponse(
-                            statusCode: response.statusCode,
-                            bodyPreview: preview,
-                            endpoint: path,
-                            diagnostics: nil
-                        )
-                    } else if response.statusCode == 404 {
-                        let preview = String(data: data, encoding: .utf8).map {
-                            String($0.prefix(300))
-                        }
-                        lastError = .invalidResponse(
-                            statusCode: response.statusCode,
-                            bodyPreview: preview,
-                            endpoint: path,
-                            diagnostics: nil
-                        )
-                        pathNotFoundError = lastError
-                    } else {
-                        let preview = String(data: data, encoding: .utf8).map {
-                            String($0.prefix(300))
-                        }
-                        let err = PiHoleError.invalidResponse(
-                            statusCode: response.statusCode,
-                            bodyPreview: preview,
-                            endpoint: path,
-                            diagnostics: nil
-                        )
-                        lastError = err
-                        throw err
-                    }
-                }
-
-                if pathNotFoundError == nil {
-                    for mode in [AuthMode.bearer, .tokenHeader, .queryToken] {
-                        let (data, response) = try await sendRequest(
-                            path: path, queryItems: [], authMode: mode)
-                        if response.statusCode == 200 {
-                            if let status = decodeV6Status(from: data) { return status }
-                            let preview = String(data: data, encoding: .utf8).map {
-                                String($0.prefix(300))
-                            }
-                            let err = PiHoleError.invalidResponse(
-                                statusCode: response.statusCode,
-                                bodyPreview: preview,
-                                endpoint: path,
-                                diagnostics: nil
-                            )
-                            lastError = err
-                            throw err
-                        }
-
-                        if response.statusCode == 401 || response.statusCode == 403 {
-                            let preview = String(data: data, encoding: .utf8).map {
-                                String($0.prefix(300))
-                            }
-                            lastAuthError = .invalidResponse(
-                                statusCode: response.statusCode,
-                                bodyPreview: preview,
-                                endpoint: path,
-                                diagnostics: nil
-                            )
-                            continue
-                        }
-
-                        if response.statusCode == 404 {
-                            let preview = String(data: data, encoding: .utf8).map {
-                                String($0.prefix(300))
-                            }
-                            lastError = .invalidResponse(
-                                statusCode: response.statusCode,
-                                bodyPreview: preview,
-                                endpoint: path,
-                                diagnostics: nil
-                            )
-                            pathNotFoundError = lastError
-                            break
-                        }
-
-                        let preview = String(data: data, encoding: .utf8).map {
-                            String($0.prefix(300))
-                        }
-                        let err = PiHoleError.invalidResponse(
-                            statusCode: response.statusCode,
-                            bodyPreview: preview,
-                            endpoint: path,
-                            diagnostics: nil
-                        )
-                        lastError = err
-                        throw err
-                    }
-                }
-
-                if let pathNotFoundError {
-                    lastError = pathNotFoundError
-                    throw pathNotFoundError
-                }
-
-                if let lastAuthError {
-                    lastError = lastAuthError
-                    throw lastAuthError
-                } else {
-                    let fallbackError = PiHoleError.invalidResponse(
-                        statusCode: nil,
-                        bodyPreview: nil,
-                        endpoint: path,
-                        diagnostics: nil
-                    )
-                    lastError = fallbackError
-                    throw fallbackError
-                }
-            } catch let err as PiHoleError {
-                lastError = err
-                throw err
-            } catch {
-                continue
+        // Prefer session if available (works with app passwords), with one re-auth retry.
+        if await sessionAuthIfPossible() != nil {
+            let (data, response) = try await sendRequestWithSessionRetry(
+                path: path, queryItems: queryItems, method: method, jsonBody: jsonBody)
+            if response.statusCode != 401 && response.statusCode != 403 {
+                return (data, response)
             }
+            lastAuthError = .invalidResponse(
+                statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data),
+                endpoint: path,
+                diagnostics: nil
+            )
         }
-        if let err = lastError { throw err }
-        return nil
+
+        // Fall back to other auth modes.
+        for mode in [AuthMode.bearer, .tokenHeader, .queryToken] {
+            let (data, response) = try await sendRequest(
+                path: path, queryItems: queryItems, authMode: mode, method: method, jsonBody: jsonBody)
+            if response.statusCode != 401 && response.statusCode != 403 {
+                return (data, response)
+            }
+            lastAuthError = .invalidResponse(
+                statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data),
+                endpoint: path,
+                diagnostics: nil
+            )
+        }
+
+        throw lastAuthError ?? PiHoleError.invalidResponse(
+            statusCode: nil, bodyPreview: nil, endpoint: path, diagnostics: nil)
     }
 
-    private func enableV6() async throws -> Bool {
-        let enablePayload: [String: Any] = ["status": "enabled", "blocking": true]
-        let attempts: [(String, String, [String: Any]?)] = [
-            ("api/dns/blocking", "POST", enablePayload),
-            ("api/dns/blocking", "PUT", enablePayload),
-            ("api/dns/blocking/enable", "POST", nil),
-        ]
+    /// Tries multiple endpoint/method combos with auth fallback. Returns true if any succeeds (2xx).
+    private func performV6Mutation(
+        attempts: [(path: String, method: String, body: [String: Any]?)]
+    ) async throws -> Bool {
         var lastError: PiHoleError?
         for attempt in attempts {
             do {
-                // Prefer session if available (with one re-auth retry), then try other modes.
-                if await sessionAuthIfPossible() != nil {
-                    let (data, response) = try await sendRequestWithSessionRetry(
-                        path: attempt.0,
-                        queryItems: [],
-                        method: attempt.1,
-                        jsonBody: attempt.2
-                    )
-                    if (200...204).contains(response.statusCode) { return true }
-                    if response.statusCode == 401 || response.statusCode == 403 {
-                        // fall through to other auth modes
-                    } else {
-                        let preview = String(data: data, encoding: .utf8)?.prefix(300)
-                        lastError = .invalidResponse(
-                            statusCode: response.statusCode,
-                            bodyPreview: preview.map(String.init),
-                            endpoint: attempt.0,
-                            diagnostics: nil
-                        )
-                        break
-                    }
-                }
-
-                for mode in [AuthMode.bearer, .tokenHeader, .queryToken] {
-                    let (data, response) = try await sendRequest(
-                        path: attempt.0, queryItems: [], authMode: mode, method: attempt.1,
-                        jsonBody: attempt.2)
-                    if (200...204).contains(response.statusCode) { return true }
-                    if response.statusCode == 401 || response.statusCode == 403 {
-                        continue
-                    }
-                    let preview = String(data: data, encoding: .utf8)?.prefix(300)
-                    lastError = .invalidResponse(
-                        statusCode: response.statusCode,
-                        bodyPreview: preview.map(String.init),
-                        endpoint: attempt.0,
-                        diagnostics: nil
-                    )
-                    break
-                }
+                let (data, response) = try await requestV6WithAuthFallback(
+                    path: attempt.path, method: attempt.method, jsonBody: attempt.body)
+                if (200...204).contains(response.statusCode) { return true }
+                lastError = .invalidResponse(
+                    statusCode: response.statusCode,
+                    bodyPreview: bodyPreview(from: data),
+                    endpoint: attempt.path,
+                    diagnostics: nil
+                )
             } catch let err as PiHoleError {
                 lastError = err
             } catch {
@@ -611,78 +455,63 @@ struct PiHoleClient {
         }
         if let err = lastError { throw err }
         return false
+    }
+
+    private func fetchStatusV6() async throws -> Bool? {
+        let (data, response) = try await requestV6WithAuthFallback(path: "api/dns/blocking")
+        guard response.statusCode == 200 else {
+            throw PiHoleError.invalidResponse(
+                statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data),
+                endpoint: "api/dns/blocking",
+                diagnostics: nil
+            )
+        }
+        if let status = decodeV6Status(from: data) { return status }
+        throw PiHoleError.invalidResponse(
+            statusCode: response.statusCode,
+            bodyPreview: bodyPreview(from: data),
+            endpoint: "api/dns/blocking",
+            diagnostics: nil
+        )
+    }
+
+    private func enableV6() async throws -> Bool {
+        let payload: [String: Any] = ["status": "enabled", "blocking": true]
+        return try await performV6Mutation(attempts: [
+            ("api/dns/blocking", "POST", payload),
+            ("api/dns/blocking", "PUT", payload),
+            ("api/dns/blocking/enable", "POST", nil),
+        ])
     }
 
     private func disableV6(durationSeconds: Int?) async throws -> Bool {
         var payload: [String: Any] = ["status": "disabled", "blocking": false]
         if let durationSeconds { payload["duration"] = durationSeconds }
-
-        let attempts: [(String, String, [String: Any]?)] = [
+        return try await performV6Mutation(attempts: [
             ("api/dns/blocking", "POST", payload),
             ("api/dns/blocking", "PUT", payload),
             ("api/dns/blocking/disable", "POST", durationSeconds.map { ["duration": $0] }),
-        ]
-        var lastError: PiHoleError?
-        for attempt in attempts {
-            do {
-                if await sessionAuthIfPossible() != nil {
-                    let (data, response) = try await sendRequestWithSessionRetry(
-                        path: attempt.0,
-                        queryItems: [],
-                        method: attempt.1,
-                        jsonBody: attempt.2
-                    )
-                    if (200...204).contains(response.statusCode) { return true }
-                    if response.statusCode == 401 || response.statusCode == 403 {
-                        // fall through to other auth modes
-                    } else {
-                        let preview = String(data: data, encoding: .utf8)?.prefix(300)
-                        lastError = .invalidResponse(
-                            statusCode: response.statusCode,
-                            bodyPreview: preview.map(String.init),
-                            endpoint: attempt.0,
-                            diagnostics: nil
-                        )
-                        break
-                    }
-                }
-
-                for mode in [AuthMode.bearer, .tokenHeader, .queryToken] {
-                    let (data, response) = try await sendRequest(
-                        path: attempt.0, queryItems: [], authMode: mode, method: attempt.1,
-                        jsonBody: attempt.2)
-                    if (200...204).contains(response.statusCode) { return true }
-                    if response.statusCode == 401 || response.statusCode == 403 {
-                        continue
-                    }
-                    let preview = String(data: data, encoding: .utf8)?.prefix(300)
-                    lastError = .invalidResponse(
-                        statusCode: response.statusCode,
-                        bodyPreview: preview.map(String.init),
-                        endpoint: attempt.0,
-                        diagnostics: nil
-                    )
-                    break
-                }
-            } catch let err as PiHoleError {
-                lastError = err
-            } catch {
-                continue
-            }
-        }
-        if let err = lastError { throw err }
-        return false
+        ])
     }
 
-    // This session is only used if allowSelfSignedCert is true
-    private static var acceptingSelfSignedSession: URLSession = {
-        let configuration = URLSessionConfiguration.default
-        let delegate = IgnoreSelfSignedCertificateDelegate()
-        return URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
-    }()
+    /// Cache of host-scoped sessions so we don't create a new URLSession per request.
+    private static var selfSignedSessions: [String: URLSession] = [:]
+    private static let sessionLock = NSLock()
 
     private func urlSession() -> URLSession {
-        allowSelfSignedCert ? Self.acceptingSelfSignedSession : .shared
+        guard allowSelfSignedCert, let host = baseURL.host else { return .shared }
+        Self.sessionLock.lock()
+        defer { Self.sessionLock.unlock() }
+        if let existing = Self.selfSignedSessions[host] { return existing }
+        let configuration = URLSessionConfiguration.default
+        // Disable automatic cookie handling — we manage cookies manually via headers.
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
+        let delegate = HostScopedSelfSignedCertDelegate(allowedHost: host)
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        Self.selfSignedSessions[host] = session
+        return session
     }
 
     func fetchStatus(allowLegacyFallback: Bool = true) async throws -> Bool {
@@ -713,10 +542,9 @@ struct PiHoleClient {
             let decoded = try JSONDecoder().decode(StatusResponse.self, from: data)
             return decoded.status.lowercased() == "enabled"
         } catch {
-            let bodyPreview = String(data: data, encoding: .utf8)?.prefix(300)
             throw PiHoleError.invalidResponse(
                 statusCode: response.statusCode,
-                bodyPreview: bodyPreview.map(String.init),
+                bodyPreview: bodyPreview(from: data),
                 endpoint: "admin/api.php",
                 diagnostics: legacyDiagnosticsIfNeeded(
                     statusCode: response.statusCode,
@@ -727,8 +555,16 @@ struct PiHoleClient {
     }
 
     func enableBlocking() async throws {
-        // v6 first
-        if (try? await enableV6()) == true { return }
+        // v6 first; only fall back to legacy on 404 (endpoint missing)
+        do {
+            if try await enableV6() { return }
+        } catch let err as PiHoleError {
+            if case .invalidResponse(let statusCode, _, _, _) = err, statusCode == 404 {
+                // v6 endpoint missing, fall through to legacy
+            } else {
+                throw err
+            }
+        }
 
         // Legacy v5 fallback
         let (_, response) = try await requestLegacy(
@@ -751,8 +587,16 @@ struct PiHoleClient {
     }
 
     func disableBlocking(durationSeconds: Int? = nil) async throws {
-        // v6 first
-        if (try? await disableV6(durationSeconds: durationSeconds)) == true { return }
+        // v6 first; only fall back to legacy on 404 (endpoint missing)
+        do {
+            if try await disableV6(durationSeconds: durationSeconds) { return }
+        } catch let err as PiHoleError {
+            if case .invalidResponse(let statusCode, _, _, _) = err, statusCode == 404 {
+                // v6 endpoint missing, fall through to legacy
+            } else {
+                throw err
+            }
+        }
 
         // Legacy v5 fallback
         var items: [URLQueryItem]
@@ -776,13 +620,20 @@ struct PiHoleClient {
     }
 }
 
-// Accepts all certs if allowSelfSignedCert is true (do not use for anything but Pi-hole!)
-private final class IgnoreSelfSignedCertificateDelegate: NSObject, URLSessionDelegate {
+/// Accepts self-signed certs only for the specified Pi-hole host. All other hosts use default validation.
+private final class HostScopedSelfSignedCertDelegate: NSObject, URLSessionDelegate {
+    private let allowedHost: String
+
+    init(allowedHost: String) {
+        self.allowedHost = allowedHost
+    }
+
     func urlSession(
         _ session: URLSession, didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
-        if let trust = challenge.protectionSpace.serverTrust {
+        let challengeHost = challenge.protectionSpace.host
+        if challengeHost == allowedHost, let trust = challenge.protectionSpace.serverTrust {
             completionHandler(.useCredential, URLCredential(trust: trust))
         } else {
             completionHandler(.performDefaultHandling, nil)

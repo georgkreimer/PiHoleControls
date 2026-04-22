@@ -1,6 +1,6 @@
-# Repository Guidelines
+# CLAUDE.md
 
-These notes keep contributions consistent for the Pi-hole macOS menu bar controller. Favor small, focused changes and update this guide if the workflow shifts.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Build and Test Commands
 
@@ -17,37 +17,50 @@ xcodebuild test -scheme PiHoleControls -destination "platform=macOS" -only-testi
 # Run UI tests only
 xcodebuild test -scheme PiHoleControls -destination "platform=macOS" -only-testing:PiHoleControlsUITests
 
-# Build release and create zip
+# Run a single test by name
+xcodebuild test -scheme PiHoleControls -destination "platform=macOS" -only-testing:PiHoleControlsTests/PiHoleStoreTests/fetchStatusBlockingEnabled
+
+# Build release zip
 ./scripts/release.sh
 
-# Build and upload to GitHub Releases
+# Build and upload to GitHub Releases (requires `gh` CLI)
 ./scripts/release.sh --upload
 ```
 
-For development, open `PiHoleControls.xcodeproj` in Xcode and run with the PiHoleControls scheme on "My Mac".
+Requires Xcode 15+ and macOS 14+.
 
 ## Architecture Overview
 
-This is a macOS menu bar app that controls Pi-hole DNS blocking. The app supports both Pi-hole v5 (legacy API) and v6 (modern REST API).
+macOS menu bar app that controls Pi-hole DNS blocking. Supports both Pi-hole v5 (legacy API) and v6 (modern REST API).
 
 ### Core Components
 
-**PiHoleStore** (`PiHoleStore.swift`) - Central state manager marked `@MainActor`. Holds all UI state (`isBlockingEnabled`, `isLoading`, `lastError`, `remainingDisableSeconds`) and settings (`host`, `token`, `allowSelfSignedCert`). Manages auto-refresh polling (20s interval), network monitoring via `NWPathMonitor`, and countdown timers for timed disable. Uses retry logic with exponential backoff for network operations.
+**PiHoleStore** (`PiHoleStore.swift`) — `@MainActor` ObservableObject that owns all UI state and settings. Manages auto-refresh polling (20s), network monitoring via `NWPathMonitor`, countdown timers for timed disable, and retry with exponential backoff. Accepts a `ClientFactory` closure for dependency injection in tests.
 
-**PiHoleClient** (`PiHoleClient.swift`) - Stateless API client handling all Pi-hole communication. Attempts v6 API endpoints first (`/api/dns/blocking`), falling back to v5 legacy API (`/admin/api.php`) on 404. Supports multiple authentication modes: session-based (with CSRF), Bearer token, Token header, and query parameter. Sessions are cached in `PiHoleSessionCache` and automatically refreshed on 401/403.
+**PiHoleClient** (`PiHoleClient.swift`) — Stateless struct implementing `PiHoleClientProtocol`. Tries v6 endpoints first (`/api/dns/blocking`), falls back to v5 legacy API (`/admin/api.php`) on 404. Supports session-based auth (with CSRF), Bearer token, Token header, and query parameter auth modes. Sessions are cached in `PiHoleSessionCache` (a Swift actor with 25-min TTL) and auto-refreshed on 401/403.
 
-**StatusItemController** (`StatusItemController.swift`) - Owns the `NSStatusItem` and popover. Left-click toggles blocking directly; right-click opens the popover menu. Uses a custom `StatusItemView` (AppKit) to display the menu bar icon with optional countdown timer overlay.
+**StatusItemController** (`StatusItemController.swift`) — Owns the `NSStatusItem` and `NSPopover`. Left-click toggles blocking; right-click opens the popover. Uses a custom `StatusItemView` (AppKit `NSView`) for the menu bar icon with countdown timer overlay. Observes store via Combine.
 
-**ContentView** (`ContentView.swift`) - SwiftUI popover interface with sliding navigation between status and settings views. Contains the main status card, action buttons, duration picker pills, and inline settings form.
+**ContentView** (`ContentView.swift`) — SwiftUI popover with sliding navigation between status and settings views. Fixed 300pt width. Uses `HeightReader` to animate height transitions between views. Popover dismissal is threaded through a custom `dismissMenu` SwiftUI `EnvironmentKey`.
+
+**SettingsView** (`SettingsView.swift`) — Standalone SwiftUI settings window (opened via macOS Settings menu). Contains connection test that calls `fetchStatus(allowLegacyFallback: false)` to verify v6 connectivity.
 
 ### Data Flow
 
-1. `AppDelegate` creates `PiHoleStore` and `StatusItemController` on launch
-2. `StatusItemController` observes store's published properties via Combine
-3. User actions (click, menu selection) call `PiHoleStore` methods
-4. `PiHoleStore` creates ephemeral `PiHoleClient` instances for each request
+1. `PiHoleControlsApp` uses `@NSApplicationDelegateAdaptor` to bridge to `AppDelegate`
+2. `AppDelegate` creates `PiHoleStore` and `StatusItemController` on launch
+3. `StatusItemController` observes store's `@Published` properties via Combine
+4. User actions call `PiHoleStore` methods, which create ephemeral `PiHoleClient` instances
 5. Results update `@Published` properties, triggering UI updates
+
+### UI Layer
+
+Hybrid AppKit + SwiftUI. The menu bar icon is pure AppKit (`NSStatusItem` + custom `NSView`). The popover content and settings window are SwiftUI hosted in `NSHostingController`. The popover is dismissed via a closure injected through `MenuDismissEnvironment`.
+
+### Testing
+
+Tests use **Swift Testing** framework (`import Testing`, `@Test`, `@Suite`, `#expect`), not XCTest. The `PiHoleClientProtocol` enables mock injection — `MockPiHoleClient` tracks call counts and configurable responses. `PiHoleStore` accepts a `clientFactory` closure to swap in mocks. Tests use `Task.sleep` to wait for async operations.
 
 ### API Token Storage
 
-API tokens are stored in the macOS Keychain via `KeychainHelper`. On first launch, tokens migrate from `@AppStorage` (UserDefaults) to Keychain automatically.
+Tokens are stored in macOS Keychain via `KeychainHelper` (service: `com.littleappventures.PiHoleControls`). On first launch, tokens migrate from `@AppStorage` (UserDefaults) to Keychain automatically.
