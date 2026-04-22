@@ -10,6 +10,7 @@ A macOS menu bar app to control your Pi-hole server. Quickly enable/disable ad b
 - Auto-refresh status every 20 seconds
 - Supports Pi-hole v5 and v6 APIs
 - Self-signed certificate support
+- Launch at login
 - Runs as a menu bar app (no dock icon by default, configurable)
 
 ## Installation
