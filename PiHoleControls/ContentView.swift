@@ -7,6 +7,7 @@
 
 import SwiftUI
 import AppKit
+import ServiceManagement
 
 // MARK: - Main Container View
 
@@ -37,6 +38,7 @@ struct ContentView: View {
                 onDisable: { dismissMenu?() }
             )
             .frame(width: 300)
+            .fixedSize(horizontal: false, vertical: true)
             .background(HeightReader { statusHeight = $0 })
             .offset(x: showSettings ? -300 : 0)
             .opacity(showSettings ? 0 : 1)
@@ -47,11 +49,12 @@ struct ContentView: View {
                 onBack: { withAnimation(.easeOut(duration: 0.35)) { showSettings = false } }
             )
             .frame(width: 300)
+            .fixedSize(horizontal: false, vertical: true)
             .background(HeightReader { settingsHeight = $0 })
             .offset(x: showSettings ? 0 : 300)
             .opacity(showSettings ? 1 : 0)
         }
-        .frame(width: 300, height: containerHeight)
+        .frame(width: 300, height: containerHeight, alignment: .top)
         .background(.ultraThinMaterial)
         .clipped()
         .animation(.easeOut(duration: 0.35), value: showSettings)
@@ -135,32 +138,23 @@ private struct StatusContentView: View {
     @Binding var appearAnimation: Bool
     let onSettingsTapped: () -> Void
     let onDisable: () -> Void
-    @State private var footerHeight: CGFloat = 0
- 
     var body: some View {
-        ZStack(alignment: .top) {
-            VStack(spacing: 0) {
-                statusCard
-                    .padding(.horizontal, 16)
-                    .padding(.top, 16)
-                    .padding(.bottom, 14)
+        VStack(spacing: 0) {
+            statusCard
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                .padding(.bottom, 14)
 
-                actionSection
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 14)
-            }
-            .padding(.bottom, footerHeight)
- 
-            VStack(spacing: 0) {
-                Divider()
-                    .opacity(0.5)
- 
-                footerButtons
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 6)
-            }
-            .background(HeightReader { footerHeight = $0 })
-            .frame(maxHeight: .infinity, alignment: .bottom)
+            actionSection
+                .padding(.horizontal, 16)
+                .padding(.bottom, 14)
+
+            Divider()
+                .opacity(0.5)
+
+            footerButtons
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
         }
     }
 
@@ -379,6 +373,7 @@ private struct SettingsContentView: View {
     @State private var appearAnimation = false
     @State private var showSelfSignedWarning = false
     @AppStorage("showDockIcon") private var showDockIcon = false
+    @AppStorage("launchAtLogin") private var launchAtLogin = false
 
     enum TestState: Equatable {
         case idle, loading, success, failure(String)
@@ -419,6 +414,8 @@ private struct SettingsContentView: View {
             withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
                 appearAnimation = true
             }
+            // Sync launch-at-login toggle with actual system state
+            launchAtLogin = SMAppService.mainApp.status == .enabled
         }
         .onChange(of: store.host) { _, _ in resetTestState() }
         .onChange(of: store.token) { _, _ in resetTestState() }
@@ -552,41 +549,57 @@ private struct SettingsContentView: View {
     // MARK: - Options Card (preferences)
 
     private var optionsCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             sectionHeader(icon: "slider.horizontal.3", color: .gray, title: "Options")
 
-            // Self-signed certificates
-            optionRow(
-                icon: "lock.shield",
-                iconColor: store.allowSelfSignedCert ? .orange : .secondary
-            ) {
-                Toggle(isOn: Binding(
-                    get: { store.allowSelfSignedCert },
-                    set: { newValue in
-                        if newValue {
-                            showSelfSignedWarning = true
-                        } else {
-                            store.allowSelfSignedCert = false
+            VStack(spacing: 0) {
+                // Self-signed certificates
+                optionToggle(
+                    icon: "lock.shield",
+                    iconColor: store.allowSelfSignedCert ? .orange : .secondary,
+                    label: "Self-signed certificates",
+                    isOn: Binding(
+                        get: { store.allowSelfSignedCert },
+                        set: { newValue in
+                            if newValue {
+                                showSelfSignedWarning = true
+                            } else {
+                                store.allowSelfSignedCert = false
+                            }
                         }
+                    )
+                )
+
+                Divider().opacity(0.3).padding(.leading, 28)
+
+                // Launch at login
+                optionToggle(
+                    icon: "sunrise",
+                    iconColor: launchAtLogin ? .yellow : .secondary,
+                    label: "Launch at login",
+                    isOn: $launchAtLogin
+                )
+                .onChange(of: launchAtLogin) {
+                    do {
+                        if launchAtLogin {
+                            try SMAppService.mainApp.register()
+                        } else {
+                            try SMAppService.mainApp.unregister()
+                        }
+                    } catch {
+                        launchAtLogin.toggle() // revert on failure
                     }
-                )) {
-                    Text("Self-signed certificates")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
                 }
-                .toggleStyle(.switch)
-                .controlSize(.mini)
-            }
 
-            Divider().opacity(0.3)
+                Divider().opacity(0.3).padding(.leading, 28)
 
-            // Dock icon
-            optionRow(icon: "dock.rectangle", iconColor: .secondary) {
-                Toggle(isOn: $showDockIcon) {
-                    Text("Show dock icon")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                }
-                .toggleStyle(.switch)
-                .controlSize(.mini)
+                // Dock icon
+                optionToggle(
+                    icon: "dock.rectangle",
+                    iconColor: .secondary,
+                    label: "Show dock icon",
+                    isOn: $showDockIcon
+                )
                 .onChange(of: showDockIcon) {
                     NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
                     if showDockIcon {
@@ -634,18 +647,26 @@ private struct SettingsContentView: View {
         }
     }
 
-    private func optionRow<Content: View>(
+    private func optionToggle(
         icon: String,
         iconColor: Color,
-        @ViewBuilder content: () -> Content
+        label: String,
+        isOn: Binding<Bool>
     ) -> some View {
         HStack(spacing: 10) {
             Image(systemName: icon)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(iconColor)
                 .frame(width: 16)
-            content()
+            Text(label)
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+            Spacer()
+            Toggle("", isOn: isOn)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
         }
+        .padding(.vertical, 4)
     }
 
     // MARK: - Test Button & Results
