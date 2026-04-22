@@ -495,11 +495,23 @@ struct PiHoleClient {
         ])
     }
 
+    /// Cache of host-scoped sessions so we don't create a new URLSession per request.
+    private static var selfSignedSessions: [String: URLSession] = [:]
+    private static let sessionLock = NSLock()
+
     private func urlSession() -> URLSession {
         guard allowSelfSignedCert, let host = baseURL.host else { return .shared }
+        Self.sessionLock.lock()
+        defer { Self.sessionLock.unlock() }
+        if let existing = Self.selfSignedSessions[host] { return existing }
         let configuration = URLSessionConfiguration.default
+        // Disable automatic cookie handling — we manage cookies manually via headers.
+        configuration.httpCookieAcceptPolicy = .never
+        configuration.httpShouldSetCookies = false
         let delegate = HostScopedSelfSignedCertDelegate(allowedHost: host)
-        return URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        Self.selfSignedSessions[host] = session
+        return session
     }
 
     func fetchStatus(allowLegacyFallback: Bool = true) async throws -> Bool {
