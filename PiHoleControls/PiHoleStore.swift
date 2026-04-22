@@ -30,6 +30,21 @@ final class PiHoleStore: ObservableObject {
     @Published var remainingDisableSeconds: Int?
     @Published var isNetworkAvailable: Bool = true
 
+    // Recently blocked domains
+    @Published var recentBlocked: [BlockedQuery] = []
+
+    // Temporary allowlist with crash-safe persistence
+    struct TempAllowEntry: Codable, Identifiable, Equatable {
+        let domain: String
+        let expiresAt: Date
+        var id: String { domain }
+        var isExpired: Bool { Date() >= expiresAt }
+        var remainingSeconds: Int { max(0, Int(expiresAt.timeIntervalSinceNow)) }
+    }
+    @Published var tempAllowList: [TempAllowEntry] = []
+    private var tempAllowTimer: Timer?
+    private static let tempAllowKey = "tempAllowList"
+
     // Auto refresh
     private var refreshTask: Task<Void, Never>?
     private var followUpRefreshTask: Task<Void, Never>?
@@ -67,6 +82,9 @@ final class PiHoleStore: ObservableObject {
 
         // Migrate from old AppStorage if exists
         migrateTokenFromAppStorage()
+
+        // Restore temp allowlist and clean up expired entries
+        restoreTempAllowList()
 
         // Start network monitoring
         startNetworkMonitoring()
@@ -189,6 +207,108 @@ final class PiHoleStore: ObservableObject {
         host.trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
             .hasPrefix("http://")
+    }
+
+    // MARK: - Temporary domain allowlist
+
+    func tempAllowDomain(_ domain: String, durationSeconds: Int) {
+        Task { await tempAllowDomainAsync(domain, durationSeconds: durationSeconds) }
+    }
+
+    private func tempAllowDomainAsync(_ domain: String, durationSeconds: Int) async {
+        guard let client = makeClient() else { return }
+        do {
+            try await client.allowDomain(domain)
+            let entry = TempAllowEntry(domain: domain, expiresAt: Date().addingTimeInterval(TimeInterval(durationSeconds)))
+            tempAllowList.removeAll { $0.domain == domain }
+            tempAllowList.append(entry)
+            persistTempAllowList()
+            startTempAllowTimer()
+        } catch {
+            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    func removeTempAllow(_ domain: String) {
+        Task { await removeTempAllowAsync(domain) }
+    }
+
+    private func removeTempAllowAsync(_ domain: String) async {
+        guard let client = makeClient() else { return }
+        do {
+            try await client.removeDomain(domain)
+        } catch {
+            // Best-effort removal from Pi-hole; always remove from local list
+        }
+        tempAllowList.removeAll { $0.domain == domain }
+        persistTempAllowList()
+    }
+
+    func fetchRecentBlocked() {
+        Task {
+            guard let client = makeClient() else { return }
+            let results = try? await client.fetchRecentBlocked(count: 5)
+            recentBlocked = results ?? []
+        }
+    }
+
+    private func persistTempAllowList() {
+        if let data = try? JSONEncoder().encode(tempAllowList) {
+            UserDefaults.standard.set(data, forKey: Self.tempAllowKey)
+        }
+    }
+
+    private func restoreTempAllowList() {
+        guard let data = UserDefaults.standard.data(forKey: Self.tempAllowKey),
+              let entries = try? JSONDecoder().decode([TempAllowEntry].self, from: data)
+        else { return }
+
+        let (expired, active) = entries.reduce(into: ([TempAllowEntry](), [TempAllowEntry]())) { result, entry in
+            if entry.isExpired {
+                result.0.append(entry)
+            } else {
+                result.1.append(entry)
+            }
+        }
+
+        tempAllowList = active
+        persistTempAllowList()
+
+        // Clean up expired entries from Pi-hole
+        if !expired.isEmpty {
+            Task {
+                guard let client = makeClient() else { return }
+                for entry in expired {
+                    try? await client.removeDomain(entry.domain)
+                }
+            }
+        }
+
+        if !active.isEmpty {
+            startTempAllowTimer()
+        }
+    }
+
+    private func startTempAllowTimer() {
+        tempAllowTimer?.invalidate()
+        tempAllowTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let now = Date()
+                let expired = self.tempAllowList.filter { now >= $0.expiresAt }
+                if !expired.isEmpty {
+                    for entry in expired {
+                        self.removeTempAllow(entry.domain)
+                    }
+                }
+                // Update published property to refresh countdowns
+                self.objectWillChange.send()
+                if self.tempAllowList.isEmpty {
+                    self.tempAllowTimer?.invalidate()
+                    self.tempAllowTimer = nil
+                }
+            }
+        }
     }
 
     // MARK: - Public operations (fire-and-forget wrappers for UI)

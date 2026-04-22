@@ -138,6 +138,8 @@ private struct StatusContentView: View {
     @Binding var appearAnimation: Bool
     let onSettingsTapped: () -> Void
     let onDisable: () -> Void
+    @State private var showRecentBlocked = false
+
     var body: some View {
         VStack(spacing: 0) {
             statusCard
@@ -147,7 +149,14 @@ private struct StatusContentView: View {
 
             actionSection
                 .padding(.horizontal, 16)
-                .padding(.bottom, 14)
+                .padding(.bottom, 10)
+
+            // Temporary allowlist & recently blocked
+            if store.isBlockingEnabled == true {
+                domainSection
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 14)
+            }
 
             Divider()
                 .opacity(0.5)
@@ -292,6 +301,131 @@ private struct StatusContentView: View {
         .offset(y: appearAnimation ? 0 : 15)
         .animation(.spring(response: 0.5, dampingFraction: 0.7).delay(0.1), value: appearAnimation)
         .animation(.easeOut(duration: 0.4), value: store.isBlockingEnabled)
+    }
+
+    // MARK: - Domain Section (recently blocked + temp allowlist)
+
+    private var domainSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            // Active temp-allowed domains
+            if !store.tempAllowList.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Allowed temporarily")
+                        .font(.system(size: 10, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                        .textCase(.uppercase)
+
+                    ForEach(store.tempAllowList) { entry in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(.green)
+                                .frame(width: 6, height: 6)
+                            Text(entry.domain)
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Text(formatCountdown(entry.remainingSeconds))
+                                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                            Button {
+                                store.removeTempAllow(entry.domain)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(.green.opacity(0.1))
+                        }
+                    }
+                }
+            }
+
+            // Recently blocked (expandable)
+            Button {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    showRecentBlocked.toggle()
+                }
+                if showRecentBlocked {
+                    store.fetchRecentBlocked()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: showRecentBlocked ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                    Text("Recently Blocked")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+            }
+            .buttonStyle(.plain)
+
+            if showRecentBlocked {
+                if store.recentBlocked.isEmpty {
+                    Text("No recent blocked queries available")
+                        .font(.system(size: 11, weight: .medium, design: .rounded))
+                        .foregroundStyle(.secondary.opacity(0.6))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                } else {
+                    VStack(spacing: 2) {
+                        ForEach(store.recentBlocked) { query in
+                            HStack(spacing: 8) {
+                                Image(systemName: "nosign")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.red.opacity(0.7))
+                                Text(query.domain)
+                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer()
+                                Text(relativeTime(query.timestamp))
+                                    .font(.system(size: 10, weight: .medium, design: .rounded))
+                                    .foregroundStyle(.secondary)
+                                Button {
+                                    let duration = selectedDisableOption.durationSeconds ?? 300
+                                    store.tempAllowDomain(query.domain, durationSeconds: duration)
+                                } label: {
+                                    Image(systemName: "plus.circle.fill")
+                                        .font(.system(size: 14))
+                                        .foregroundStyle(.green)
+                                }
+                                .buttonStyle(.plain)
+                                .help("Temporarily allow this domain")
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background {
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(Color.primary.opacity(0.03))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func formatCountdown(_ seconds: Int) -> String {
+        let min = seconds / 60
+        let sec = seconds % 60
+        return String(format: "%d:%02d", min, sec)
+    }
+
+    private func relativeTime(_ date: Date) -> String {
+        let seconds = Int(Date().timeIntervalSince(date))
+        if seconds < 60 { return "\(seconds)s" }
+        if seconds < 3600 { return "\(seconds / 60)m" }
+        return "\(seconds / 3600)h"
     }
 
     // MARK: - Footer

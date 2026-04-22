@@ -7,19 +7,32 @@
 
 import Foundation
 
+/// A recently blocked DNS query
+struct BlockedQuery: Identifiable, Equatable {
+    let id = UUID()
+    let domain: String
+    let timestamp: Date
+}
+
 /// Protocol defining the Pi-hole API operations
 protocol PiHoleClientProtocol {
     /// Fetch the current blocking status
-    /// - Parameter allowLegacyFallback: Whether to fall back to v5 API if v6 fails
-    /// - Returns: true if blocking is enabled, false if disabled
     func fetchStatus(allowLegacyFallback: Bool) async throws -> Bool
 
     /// Enable ad blocking
     func enableBlocking() async throws
 
     /// Disable ad blocking
-    /// - Parameter durationSeconds: Optional duration in seconds, nil for indefinite
     func disableBlocking(durationSeconds: Int?) async throws
+
+    /// Fetch recently blocked domains
+    func fetchRecentBlocked(count: Int) async throws -> [BlockedQuery]
+
+    /// Add a domain to the allowlist
+    func allowDomain(_ domain: String) async throws
+
+    /// Remove a domain from the allowlist
+    func removeDomain(_ domain: String) async throws
 }
 
 // Default parameter value for protocol extension

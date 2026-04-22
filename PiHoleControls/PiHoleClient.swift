@@ -495,6 +495,92 @@ struct PiHoleClient {
         ])
     }
 
+    // MARK: - Domain management
+
+    func fetchRecentBlocked(count: Int) async throws -> [BlockedQuery] {
+        // Try v6 queries endpoint first
+        do {
+            let (data, response) = try await requestV6WithAuthFallback(
+                path: "api/queries", queryItems: [
+                    URLQueryItem(name: "blocked", value: "true"),
+                    URLQueryItem(name: "length", value: "\(count)")
+                ])
+            if response.statusCode == 200 {
+                struct QueryResponse: Decodable {
+                    struct Query: Decodable {
+                        let domain: String?
+                        let time: Double?
+                    }
+                    let queries: [Query]
+                }
+                if let decoded = try? JSONDecoder().decode(QueryResponse.self, from: data) {
+                    let results = decoded.queries.compactMap { q -> BlockedQuery? in
+                        guard let domain = q.domain else { return nil }
+                        let timestamp = q.time.map { Date(timeIntervalSince1970: $0) } ?? Date()
+                        return BlockedQuery(domain: domain, timestamp: timestamp)
+                    }
+                    if !results.isEmpty { return results }
+                }
+            }
+        } catch {}
+
+        // Try v6 recent_blocked stats endpoint
+        do {
+            let (data, response) = try await requestV6WithAuthFallback(path: "api/stats/recent_blocked")
+            if response.statusCode == 200 {
+                struct RecentBlocked: Decodable {
+                    struct Entry: Decodable {
+                        let domain: String?
+                        let name: String?
+                        let time: Double?
+                        let timestamp: Double?
+                    }
+                    let blocked: [Entry]?
+                    let recent_blocked: [Entry]?
+                }
+                if let decoded = try? JSONDecoder().decode(RecentBlocked.self, from: data) {
+                    let entries = decoded.blocked ?? decoded.recent_blocked ?? []
+                    let results = entries.prefix(count).compactMap { e -> BlockedQuery? in
+                        guard let domain = e.domain ?? e.name else { return nil }
+                        let ts = (e.time ?? e.timestamp).map { Date(timeIntervalSince1970: $0) } ?? Date()
+                        return BlockedQuery(domain: domain, timestamp: ts)
+                    }
+                    if !results.isEmpty { return results }
+                }
+            }
+        } catch {}
+
+        return []
+    }
+
+    func allowDomain(_ domain: String) async throws {
+        let (data, response) = try await requestV6WithAuthFallback(
+            path: "api/domains/allow/exact",
+            method: "POST",
+            jsonBody: ["domain": domain])
+        guard (200...204).contains(response.statusCode) else {
+            throw PiHoleError.invalidResponse(
+                statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data),
+                endpoint: "api/domains/allow/exact",
+                diagnostics: nil)
+        }
+    }
+
+    func removeDomain(_ domain: String) async throws {
+        let encoded = domain.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? domain
+        let (data, response) = try await requestV6WithAuthFallback(
+            path: "api/domains/allow/exact/\(encoded)",
+            method: "DELETE")
+        guard (200...204).contains(response.statusCode) else {
+            throw PiHoleError.invalidResponse(
+                statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data),
+                endpoint: "api/domains/allow/exact/\(domain)",
+                diagnostics: nil)
+        }
+    }
+
     /// Cache of host-scoped sessions so we don't create a new URLSession per request.
     private static var selfSignedSessions: [String: URLSession] = [:]
     private static let sessionLock = NSLock()

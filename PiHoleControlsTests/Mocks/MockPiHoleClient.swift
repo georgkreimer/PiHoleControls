@@ -43,6 +43,26 @@ final class MockPiHoleClient: PiHoleClientProtocol {
         }
     }
 
+    // Domain management
+    var recentBlockedToReturn: [BlockedQuery] = []
+    private(set) var allowedDomains: [String] = []
+    private(set) var removedDomains: [String] = []
+
+    func fetchRecentBlocked(count: Int) async throws -> [BlockedQuery] {
+        if let error = errorToThrow { throw error }
+        return Array(recentBlockedToReturn.prefix(count))
+    }
+
+    func allowDomain(_ domain: String) async throws {
+        if let error = errorToThrow { throw error }
+        allowedDomains.append(domain)
+    }
+
+    func removeDomain(_ domain: String) async throws {
+        if let error = errorToThrow { throw error }
+        removedDomains.append(domain)
+    }
+
     // Helper to reset all tracking
     func reset() {
         statusToReturn = true
