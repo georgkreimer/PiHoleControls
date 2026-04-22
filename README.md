@@ -10,6 +10,7 @@ A macOS menu bar app to control your Pi-hole server. Quickly enable/disable ad b
 - Auto-refresh status every 20 seconds
 - Supports Pi-hole v5 and v6 APIs
 - Self-signed certificate support
+- Runs as a menu bar app (no dock icon by default, configurable)
 
 ## Installation
 
@@ -19,10 +20,10 @@ Download the latest release from the [Releases](../../releases) page, unzip, and
 
 ## Configuration
 
-1. Click the menu bar icon and select **Settings**
-2. Enter your Pi-hole host (e.g., `pi.hole` or `192.168.1.2:8080`)
+1. Right-click the menu bar icon to open the popover, then tap **Settings**
+2. Enter your Pi-hole host (e.g., `https://pi.hole` or `http://192.168.1.2:8080`)
 3. Enter your API token (found in Pi-hole Admin → Settings → API)
-4. Click **Test connection** to verify
+4. Click **Test** to verify
 
 ## Building from Source
 
@@ -30,7 +31,7 @@ Requires Xcode 15+ and macOS 14+.
 
 ```bash
 # clone the repository
-git clone https://github.com/YOUR_USERNAME/PiHoleControls.git
+git clone https://github.com/georgkreimer/PiHoleControls.git
 cd PiHoleControls
 
 # build
