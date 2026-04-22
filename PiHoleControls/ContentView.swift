@@ -55,6 +55,7 @@ struct ContentView: View {
         .background(.ultraThinMaterial)
         .clipped()
         .animation(.easeOut(duration: 0.35), value: showSettings)
+        .animation(.easeOut(duration: 0.35), value: containerHeight)
         .onAppear {
             syncDefaultSelection()
             withAnimation(.spring(response: 0.5, dampingFraction: 0.7)) {
@@ -142,11 +143,11 @@ private struct StatusContentView: View {
                 statusCard
                     .padding(.horizontal, 16)
                     .padding(.top, 16)
-                    .padding(.bottom, 20)
- 
+                    .padding(.bottom, 14)
+
                 actionSection
                     .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
+                    .padding(.bottom, 14)
             }
             .padding(.bottom, footerHeight)
  
@@ -227,7 +228,7 @@ private struct StatusContentView: View {
             .offset(y: appearAnimation ? 0 : 10)
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 40)
+        .padding(.vertical, 24)
         .background {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(.ultraThinMaterial)
@@ -392,9 +393,9 @@ private struct SettingsContentView: View {
                 .padding(.bottom, 14)
 
             // Main content
-            VStack(spacing: 14) {
+            VStack(spacing: 12) {
                 serverCard
-                connectionCard
+                optionsCard
             }
             .padding(.horizontal, 16)
             .padding(.bottom, 16)
@@ -422,6 +423,14 @@ private struct SettingsContentView: View {
         .onChange(of: store.host) { _, _ in resetTestState() }
         .onChange(of: store.token) { _, _ in resetTestState() }
         .onChange(of: store.allowSelfSignedCert) { _, _ in resetTestState() }
+        .alert("Security Warning", isPresented: $showSelfSignedWarning) {
+            Button("Enable Anyway", role: .destructive) {
+                store.allowSelfSignedCert = true
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Disabling certificate validation makes your connection vulnerable to man-in-the-middle attacks. Only enable this if you understand the risks and trust your network.")
+        }
     }
 
     // MARK: - Header
@@ -429,7 +438,6 @@ private struct SettingsContentView: View {
     private var settingsHeader: some View {
         HStack(spacing: 12) {
             ZStack {
-                // Glow effect
                 Circle()
                     .fill(
                         RadialGradient(
@@ -443,7 +451,6 @@ private struct SettingsContentView: View {
                     .blur(radius: 12)
                     .opacity(appearAnimation ? 0.5 : 0)
 
-                // Icon container
                 ZStack {
                     Circle()
                         .fill(.ultraThinMaterial)
@@ -498,32 +505,18 @@ private struct SettingsContentView: View {
         }
     }
 
-    // MARK: - Server Card
+    // MARK: - Server Card (connection + test)
 
     private var serverCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            // Section header
-            HStack(spacing: 8) {
-                ZStack {
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [.purple, .purple.opacity(0.7)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .frame(width: 24, height: 24)
-
-                    Image(systemName: "server.rack")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white)
-                }
-
-                Text("Server")
-                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+        VStack(alignment: .leading, spacing: 12) {
+            // Section header with test button
+            HStack {
+                sectionHeader(icon: "server.rack", color: .purple, title: "Server")
+                Spacer()
+                testButton
             }
 
+            // Fields
             VStack(spacing: 10) {
                 SettingsTextField(
                     icon: "globe",
@@ -538,135 +531,8 @@ private struct SettingsContentView: View {
                     text: $store.token
                 )
             }
-            Text("Include http:// or https://")
-                .font(.system(size: 9, weight: .medium, design: .rounded))
-                .foregroundStyle(.secondary)
-            if store.isHttpHost {
-                HStack(spacing: 4) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 9))
-                    Text("Insecure: HTTP connections are unencrypted")
-                        .font(.system(size: 9, weight: .medium))
-                }
-                .foregroundStyle(.red)
-                .padding(.leading, 2)
-            }
 
-            // Toggle with security warning
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Toggle(isOn: Binding(
-                        get: { store.allowSelfSignedCert },
-                        set: { newValue in
-                            if newValue {
-                                showSelfSignedWarning = true
-                            } else {
-                                store.allowSelfSignedCert = false
-                            }
-                        }
-                    )) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "lock.shield")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundStyle(store.allowSelfSignedCert ? .orange : .secondary)
-                            Text("Allow self-signed certificates")
-                                .font(.system(size: 11, weight: .medium, design: .rounded))
-                                .foregroundStyle(.primary.opacity(0.8))
-                        }
-                    }
-                    .toggleStyle(.switch)
-                    .controlSize(.mini)
-                }
-
-                // Persistent warning when enabled
-                if store.allowSelfSignedCert {
-                    HStack(spacing: 4) {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 9))
-                        Text("Insecure: Certificate validation disabled")
-                            .font(.system(size: 9, weight: .medium))
-                    }
-                    .foregroundStyle(.red)
-                    .padding(.leading, 2)
-                }
-            }
-            .padding(.top, 4)
-            .alert("Security Warning", isPresented: $showSelfSignedWarning) {
-                Button("Enable Anyway", role: .destructive) {
-                    store.allowSelfSignedCert = true
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("Disabling certificate validation makes your connection vulnerable to man-in-the-middle attacks. Only enable this if you understand the risks and trust your network.")
-            }
-
-            Divider()
-                .opacity(0.5)
-
-            Toggle(isOn: $showDockIcon) {
-                HStack(spacing: 8) {
-                    Image(systemName: "dock.rectangle")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                    Text("Show dock icon")
-                        .font(.system(size: 12, weight: .medium, design: .rounded))
-                }
-            }
-            .toggleStyle(.switch)
-            .controlSize(.mini)
-            .onChange(of: showDockIcon) {
-                NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
-                if showDockIcon {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) {
-                        NSApp.activate(ignoringOtherApps: true)
-                    }
-                }
-            }
-        }
-        .padding(14)
-        .background {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(.ultraThinMaterial)
-                .shadow(color: .black.opacity(0.08), radius: 8, y: 4)
-        }
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .strokeBorder(.white.opacity(0.2), lineWidth: 1)
-        }
-    }
-
-    // MARK: - Connection Card
-
-    private var connectionCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                // Section header
-                HStack(spacing: 8) {
-                    ZStack {
-                        Circle()
-                            .fill(
-                                LinearGradient(
-                                    colors: [testStateColor, testStateColor.opacity(0.7)],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .frame(width: 24, height: 24)
-
-                        Image(systemName: testStateIcon)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-
-                    Text("Connection")
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                }
-
-                Spacer()
-
-                testButton
-            }
-
+            // Connection test result
             testResultView
                 .frame(height: 36, alignment: .center)
         }
@@ -683,44 +549,134 @@ private struct SettingsContentView: View {
         .animation(.spring(response: 0.4, dampingFraction: 0.8), value: testState)
     }
 
-    private var testStateColor: Color {
-        switch testState {
-        case .idle: return .cyan
-        case .loading: return .blue
-        case .success: return .green
-        case .failure: return .red
+    // MARK: - Options Card (preferences)
+
+    private var optionsCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            sectionHeader(icon: "slider.horizontal.3", color: .gray, title: "Options")
+
+            // Self-signed certificates
+            optionRow(
+                icon: "lock.shield",
+                iconColor: store.allowSelfSignedCert ? .orange : .secondary
+            ) {
+                Toggle(isOn: Binding(
+                    get: { store.allowSelfSignedCert },
+                    set: { newValue in
+                        if newValue {
+                            showSelfSignedWarning = true
+                        } else {
+                            store.allowSelfSignedCert = false
+                        }
+                    }
+                )) {
+                    Text("Self-signed certificates")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+            }
+
+            Divider().opacity(0.3)
+
+            // Dock icon
+            optionRow(icon: "dock.rectangle", iconColor: .secondary) {
+                Toggle(isOn: $showDockIcon) {
+                    Text("Show dock icon")
+                        .font(.system(size: 12, weight: .medium, design: .rounded))
+                }
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .onChange(of: showDockIcon) {
+                    NSApp.setActivationPolicy(showDockIcon ? .regular : .accessory)
+                    if showDockIcon {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) {
+                            NSApp.activate(ignoringOtherApps: true)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(14)
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(.ultraThinMaterial)
+                .shadow(color: .black.opacity(0.08), radius: 8, y: 4)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .strokeBorder(.white.opacity(0.2), lineWidth: 1)
         }
     }
 
-    private var testStateIcon: String {
-        switch testState {
-        case .idle: return "antenna.radiowaves.left.and.right"
-        case .loading: return "arrow.triangle.2.circlepath"
-        case .success: return "checkmark"
-        case .failure: return "xmark"
+    // MARK: - Shared Components
+
+    private func sectionHeader(icon: String, color: Color, title: String) -> some View {
+        HStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [color, color.opacity(0.7)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 24, height: 24)
+
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
+
+            Text(title)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
         }
     }
+
+    private func optionRow<Content: View>(
+        icon: String,
+        iconColor: Color,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(iconColor)
+                .frame(width: 16)
+            content()
+        }
+    }
+
+    // MARK: - Test Button & Results
 
     private var testButton: some View {
         Button {
             testState = .loading
             Task { await runConnectionTest() }
         } label: {
-            HStack(spacing: 5) {
-                if testState == .loading {
-                    ProgressView()
-                        .controlSize(.mini)
-                        .scaleEffect(0.7)
-                } else {
-                    Image(systemName: "bolt.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                }
-                Text(testState == .loading ? "Testing..." : "Test")
+            ZStack {
+                // Invisible sizing label to prevent width jumps
+                Text("Testing...")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 7)
+                    .opacity(0)
+
+                HStack(spacing: 5) {
+                    if testState == .loading {
+                        ProgressView()
+                            .controlSize(.mini)
+                            .scaleEffect(0.7)
+                    } else {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    Text(testState == .loading ? "Testing..." : "Test")
+                        .font(.system(size: 12, weight: .semibold, design: .rounded))
+                }
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
             .background {
                 Capsule()
                     .fill(
@@ -741,18 +697,13 @@ private struct SettingsContentView: View {
     private var testResultView: some View {
         switch testState {
         case .idle:
-            HStack(spacing: 8) {
-                Text("Tap Test to verify your Pi-hole connection")
-                    .font(.system(size: 11, weight: .medium, design: .rounded))
-                    .foregroundStyle(.secondary)
-            }
-            .frame(maxWidth: .infinity)
+            EmptyView()
 
         case .loading:
             HStack(spacing: 8) {
                 ProgressView()
                     .controlSize(.small)
-                Text("Authenticating...")
+                Text("Connecting...")
                     .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(.primary.opacity(0.8))
             }
@@ -763,7 +714,7 @@ private struct SettingsContentView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 16))
                     .foregroundStyle(.green)
-                Text("Connection successful!")
+                Text("Connected")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
                     .foregroundStyle(.green)
             }
