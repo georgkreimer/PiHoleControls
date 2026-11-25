@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # configuration
 SCHEME="PiHoleControls"
@@ -34,9 +34,11 @@ if [ ! -f "$APP_NAME.xcodeproj/project.pbxproj" ]; then
 fi
 
 # get version from project
-VERSION=$(xcodebuild -scheme "$SCHEME" -showBuildSettings 2>/dev/null | grep MARKETING_VERSION | head -1 | awk '{print $3}')
+BUILD_SETTINGS=$(xcodebuild -scheme "$SCHEME" -showBuildSettings)
+VERSION=$(awk '/MARKETING_VERSION =/ && !found {print $3; found=1}' <<< "$BUILD_SETTINGS")
 if [ -z "$VERSION" ]; then
-    VERSION="0.0.0"
+    print_error "could not determine release version"
+    exit 1
 fi
 
 # parse arguments
@@ -100,6 +102,18 @@ if [ -z "$RELEASE_NOTES" ]; then
     RELEASE_NOTES="Release $TAG_NAME"
 fi
 
+if [ "$UPLOAD_TO_GITHUB" = true ]; then
+    if [ -n "$(git status --porcelain)" ]; then
+        print_error "commit all changes before publishing a release"
+        exit 1
+    fi
+    RELEASE_COMMIT=$(git rev-parse --verify "${TAG_NAME}^{commit}")
+    if [ "$RELEASE_COMMIT" != "$(git rev-parse HEAD)" ]; then
+        print_error "release tag must point to the current commit"
+        exit 1
+    fi
+fi
+
 echo ""
 echo "═══════════════════════════════════════════"
 echo "  $APP_NAME release builder"
@@ -109,26 +123,30 @@ echo ""
 
 # clean previous build
 print_step "cleaning previous build..."
-rm -rf "$BUILD_DIR"
+rm -rf "$ARCHIVE_PATH" "$EXPORT_PATH"
 mkdir -p "$BUILD_DIR"
 
 # build archive
 print_step "building release archive..."
-xcodebuild -scheme "$SCHEME" \
+if ! xcodebuild -scheme "$SCHEME" \
     -configuration Release \
     -archivePath "$ARCHIVE_PATH" \
     -destination "platform=macOS" \
     archive \
-    SKIP_INSTALL=NO \
     BUILD_LIBRARY_FOR_DISTRIBUTION=YES \
-    | grep -E "(^===|error:|warning:|\*\*)" || true
-
-if [ ! -d "$ARCHIVE_PATH" ]; then
-    print_error "archive failed"
+    > "$BUILD_DIR/archive.log" 2>&1; then
+    cat "$BUILD_DIR/archive.log"
+    print_error "archive failed; see $BUILD_DIR/archive.log"
     exit 1
 fi
 
-# export app (unsigned for direct distribution)
+ARCHIVED_APP=$(/usr/libexec/PlistBuddy -c 'Print :ApplicationProperties:ApplicationPath' "$ARCHIVE_PATH/Info.plist")
+if [ "$ARCHIVED_APP" != "Applications/$APP_NAME.app" ] || [ ! -d "$ARCHIVE_PATH/Products/$ARCHIVED_APP" ]; then
+    print_error "archive does not contain an exportable app"
+    exit 1
+fi
+
+# Export must succeed; never substitute a possibly incomplete archive product.
 print_step "exporting app..."
 mkdir -p "$EXPORT_PATH"
 
@@ -149,22 +167,24 @@ cat > "$EXPORT_OPTIONS" << 'EOF'
 </plist>
 EOF
 
-xcodebuild -exportArchive \
+if ! xcodebuild -exportArchive \
     -archivePath "$ARCHIVE_PATH" \
     -exportPath "$EXPORT_PATH" \
     -exportOptionsPlist "$EXPORT_OPTIONS" \
-    2>&1 | grep -E "(^===|error:|warning:|\*\*)" || true
-
-# check if export succeeded, fallback to copying from archive
-if [ ! -d "$EXPORT_PATH/$APP_NAME.app" ]; then
-    print_warning "export failed, copying app from archive..."
-    cp -R "$ARCHIVE_PATH/Products/Applications/$APP_NAME.app" "$EXPORT_PATH/" 2>/dev/null || \
-    cp -R "$ARCHIVE_PATH/Products/usr/local/bin/$APP_NAME.app" "$EXPORT_PATH/" 2>/dev/null || \
-    find "$ARCHIVE_PATH" -name "$APP_NAME.app" -exec cp -R {} "$EXPORT_PATH/" \; 2>/dev/null
+    > "$BUILD_DIR/export.log" 2>&1; then
+    cat "$BUILD_DIR/export.log"
+    print_error "export failed; see $BUILD_DIR/export.log"
+    exit 1
 fi
 
-if [ ! -d "$EXPORT_PATH/$APP_NAME.app" ]; then
-    print_error "could not find built app"
+APP_PATH="$EXPORT_PATH/$APP_NAME.app"
+EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Contents/Info.plist")
+if [ -z "$EXECUTABLE" ] || [ ! -x "$APP_PATH/Contents/MacOS/$EXECUTABLE" ]; then
+    print_error "exported app is missing its executable"
+    exit 1
+fi
+if ! codesign --verify --deep --strict "$APP_PATH"; then
+    print_error "exported app signature is invalid"
     exit 1
 fi
 
@@ -206,6 +226,7 @@ if [ "$UPLOAD_TO_GITHUB" = true ]; then
     # create release and upload asset
     gh release create "$TAG_NAME" \
         "$ZIP_PATH" \
+        --verify-tag \
         --title "$TAG_NAME" \
         --notes "$RELEASE_NOTES" \
         $DRAFT_FLAG

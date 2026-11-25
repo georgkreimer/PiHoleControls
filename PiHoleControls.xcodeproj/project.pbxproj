@@ -27,11 +27,32 @@
 		1055968B2ED5FE3200CFAF33 /* PiHoleControls.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PiHoleControls.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		105596982ED5FE3300CFAF33 /* PiHoleControlsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PiHoleControlsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		105596A22ED5FE3300CFAF33 /* PiHoleControlsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PiHoleControlsUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		10BB00012ED6000200000001 /* PiHoleControlsiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PiHoleControlsiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		10CC00012ED6000300000001 /* Exclude Info.plist from resources */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 1055968A2ED5FE3200CFAF33 /* PiHoleControls */;
+		};
+		10CC00022ED6000300000002 /* Exclude iOS Info.plist from resources */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 10BB00062ED6000200000006 /* PiHoleControlsiOS */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		1055968D2ED5FE3200CFAF33 /* PiHoleControls */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				10CC00012ED6000300000001 /* Exclude Info.plist from resources */,
+			);
 			path = PiHoleControls;
 			sourceTree = "<group>";
 		};
@@ -43,6 +64,14 @@
 		105596A52ED5FE3300CFAF33 /* PiHoleControlsUITests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = PiHoleControlsUITests;
+			sourceTree = "<group>";
+		};
+		10BB00022ED6000200000002 /* PiHoleControlsiOS */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				10CC00022ED6000300000002 /* Exclude iOS Info.plist from resources */,
+			);
+			path = PiHoleControlsiOS;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -69,6 +98,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		10BB00042ED6000200000004 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -76,6 +112,7 @@
 			isa = PBXGroup;
 			children = (
 				1055968D2ED5FE3200CFAF33 /* PiHoleControls */,
+				10BB00022ED6000200000002 /* PiHoleControlsiOS */,
 				1055969B2ED5FE3300CFAF33 /* PiHoleControlsTests */,
 				105596A52ED5FE3300CFAF33 /* PiHoleControlsUITests */,
 				1055968C2ED5FE3200CFAF33 /* Products */,
@@ -86,6 +123,7 @@
 			isa = PBXGroup;
 			children = (
 				1055968B2ED5FE3200CFAF33 /* PiHoleControls.app */,
+				10BB00012ED6000200000001 /* PiHoleControlsiOS.app */,
 				105596982ED5FE3300CFAF33 /* PiHoleControlsTests.xctest */,
 				105596A22ED5FE3300CFAF33 /* PiHoleControlsUITests.xctest */,
 			);
@@ -112,6 +150,7 @@
 			);
 			name = PiHoleControls;
 			packageProductDependencies = (
+				10AA00022ED6000100000002 /* PiHoleKit */,
 			);
 			productName = PiHoleControls;
 			productReference = 1055968B2ED5FE3200CFAF33 /* PiHoleControls.app */;
@@ -135,6 +174,7 @@
 			);
 			name = PiHoleControlsTests;
 			packageProductDependencies = (
+				10AA00032ED6000100000003 /* PiHoleKit */,
 			);
 			productName = PiHoleControlsTests;
 			productReference = 105596982ED5FE3300CFAF33 /* PiHoleControlsTests.xctest */;
@@ -163,6 +203,29 @@
 			productReference = 105596A22ED5FE3300CFAF33 /* PiHoleControlsUITests.xctest */;
 			productType = "com.apple.product-type.bundle.ui-testing";
 		};
+		10BB00062ED6000200000006 /* PiHoleControlsiOS */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 10BB00092ED6000200000009 /* Build configuration list for PBXNativeTarget "PiHoleControlsiOS" */;
+			buildPhases = (
+				10BB00032ED6000200000003 /* Sources */,
+				10BB00042ED6000200000004 /* Frameworks */,
+				10BB00052ED6000200000005 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				10BB00022ED6000200000002 /* PiHoleControlsiOS */,
+			);
+			name = PiHoleControlsiOS;
+			packageProductDependencies = (
+				10BB000A2ED6000200000010 /* PiHoleKit */,
+			);
+			productName = PiHoleControlsiOS;
+			productReference = 10BB00012ED6000200000001 /* PiHoleControlsiOS.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -184,6 +247,9 @@
 						CreatedOnToolsVersion = 26.1.1;
 						TestTargetID = 1055968A2ED5FE3200CFAF33;
 					};
+					10BB00062ED6000200000006 = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
 				};
 			};
 			buildConfigurationList = 105596862ED5FE3200CFAF33 /* Build configuration list for PBXProject "PiHoleControls" */;
@@ -201,8 +267,12 @@
 			projectRoot = "";
 			targets = (
 				1055968A2ED5FE3200CFAF33 /* PiHoleControls */,
+				10BB00062ED6000200000006 /* PiHoleControlsiOS */,
 				105596972ED5FE3300CFAF33 /* PiHoleControlsTests */,
 				105596A12ED5FE3300CFAF33 /* PiHoleControlsUITests */,
+			);
+			packageReferences = (
+				10AA00012ED6000100000001 /* XCLocalSwiftPackageReference "PiHoleKit" */,
 			);
 		};
 /* End PBXProject section */
@@ -229,6 +299,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		10BB00052ED6000200000005 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -247,6 +324,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		1055969E2ED5FE3300CFAF33 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		10BB00032ED6000200000003 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -397,7 +481,7 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = G8V784C2XL;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -423,7 +507,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.7;
+				MARKETING_VERSION = 0.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.littleappventures.PiHoleControls;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -444,7 +528,7 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = G8V784C2XL;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -470,7 +554,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.7;
+				MARKETING_VERSION = 0.8;
 				PRODUCT_BUNDLE_IDENTIFIER = com.littleappventures.PiHoleControls;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -563,6 +647,78 @@
 			};
 			name = Release;
 		};
+		10BB00072ED6000200000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = PiHoleControlsiOS/PiHoleControlsiOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = G8V784C2XL;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Pi-hole Controls";
+				INFOPLIST_FILE = PiHoleControlsiOS/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.littleappventures.PiHoleControls.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		10BB00082ED6000200000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = PiHoleControlsiOS/PiHoleControlsiOS.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = G8V784C2XL;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Pi-hole Controls";
+				INFOPLIST_FILE = PiHoleControlsiOS/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.littleappventures.PiHoleControls.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -602,7 +758,38 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		10BB00092ED6000200000009 /* Build configuration list for PBXNativeTarget "PiHoleControlsiOS" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				10BB00072ED6000200000007 /* Debug */,
+				10BB00082ED6000200000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		10AA00012ED6000100000001 /* XCLocalSwiftPackageReference "PiHoleKit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = PiHoleKit;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		10AA00022ED6000100000002 /* PiHoleKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PiHoleKit;
+		};
+		10AA00032ED6000100000003 /* PiHoleKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PiHoleKit;
+		};
+		10BB000A2ED6000200000010 /* PiHoleKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = PiHoleKit;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 105596832ED5FE3200CFAF33 /* Project object */;
 }

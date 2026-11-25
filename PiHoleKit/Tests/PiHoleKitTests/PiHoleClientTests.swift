@@ -1,14 +1,6 @@
-//
-//  PiHoleClientTests.swift
-//  PiHoleControlsTests
-//
-//  Tests for PiHoleClient init, URL construction, and error types.
-//  Network-dependent methods are not tested here (they require a running Pi-hole).
-//
-
 import Testing
 import Foundation
-@testable import PiHoleControls
+@testable import PiHoleKit
 
 @Suite("PiHoleClient Tests")
 struct PiHoleClientTests {
@@ -187,7 +179,34 @@ struct PiHoleClientTests {
 
     @Test("PiHoleClient conforms to PiHoleClientProtocol")
     func protocolConformance() {
-        let client = PiHoleClient(host: "http://pi.hole", token: "tok")
-        #expect(client is (any PiHoleClientProtocol))
+        let client: (any PiHoleClientProtocol)? = PiHoleClient(host: "http://pi.hole", token: "tok")
+        #expect(client != nil)
+    }
+
+    // MARK: - PiHoleSummary
+
+    @Test("PiHoleSummary stores all fields")
+    func summaryFields() {
+        let summary = PiHoleSummary(
+            queriesToday: 1234, blockedToday: 567, blockPercentage: 45.9, topBlockedDomain: "ads.example.com")
+        #expect(summary.queriesToday == 1234)
+        #expect(summary.blockedToday == 567)
+        #expect(summary.blockPercentage == 45.9)
+        #expect(summary.topBlockedDomain == "ads.example.com")
+    }
+
+    @Test("PiHoleSummary with nil topBlockedDomain")
+    func summaryNilDomain() {
+        let summary = PiHoleSummary(queriesToday: 0, blockedToday: 0, blockPercentage: 0)
+        #expect(summary.topBlockedDomain == nil)
+    }
+
+    @Test("PiHoleSummary equatable")
+    func summaryEquatable() {
+        let a = PiHoleSummary(queriesToday: 100, blockedToday: 50, blockPercentage: 50.0)
+        let b = PiHoleSummary(queriesToday: 100, blockedToday: 50, blockPercentage: 50.0)
+        let c = PiHoleSummary(queriesToday: 200, blockedToday: 50, blockPercentage: 25.0)
+        #expect(a == b)
+        #expect(a != c)
     }
 }

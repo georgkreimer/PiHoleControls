@@ -1,19 +1,10 @@
-//
-//  KeychainHelperTests.swift
-//  PiHoleControlsTests
-//
-//  Tests for KeychainHelper using a test-specific key prefix to avoid
-//  interfering with real app data.
-//
-
 import Testing
 import Foundation
-@testable import PiHoleControls
+@testable import PiHoleKit
 
 @Suite("KeychainHelper Tests")
 struct KeychainHelperTests {
 
-    /// Unique key prefix per test run to avoid collisions
     private let testKeyPrefix = "test-\(UUID().uuidString.prefix(8))"
 
     private func testKey(_ name: String) -> String {

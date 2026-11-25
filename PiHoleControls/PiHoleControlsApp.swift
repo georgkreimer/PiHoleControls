@@ -20,10 +20,26 @@ struct PiHoleControlsApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    let store = PiHoleStore()
+    static var isTesting: Bool {
+        let environment = ProcessInfo.processInfo.environment
+        return environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+            || NSClassFromString("XCTestCase") != nil
+            || ProcessInfo.processInfo.arguments.contains("--ui-testing")
+    }
+
+    let store: PiHoleStore = {
+        if isTesting {
+            return PiHoleStore(defaults: UserDefaults(suiteName: "PiHoleControls.TestHost.\(UUID())")!,
+                               tokenStorage: TokenStorage(load: { nil }, save: { _ in }),
+                               monitorNetwork: false)
+        }
+        return PiHoleStore()
+    }()
     private var statusItemController: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard !Self.isTesting else { return }
         // LSUIElement=YES hides dock icon by default. Show it only if user opted in.
         if UserDefaults.standard.bool(forKey: "showDockIcon") {
             NSApp.setActivationPolicy(.regular)
@@ -33,7 +49,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         statusItemController = StatusItemController(store: store)
-        store.refreshStatus()
         store.startAutoRefresh()
     }
 

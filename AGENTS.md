@@ -11,6 +11,15 @@ xcodebuild -scheme PiHoleControls -destination "platform=macOS" build
 # Run all tests
 xcodebuild test -scheme PiHoleControls -destination "platform=macOS"
 
+# Shared API/model/Keychain tests (not included in the app scheme)
+swift test --package-path PiHoleKit
+
+# Offline release-script regression tests
+python3 scripts/tests/test_release.py
+
+# iOS scaffold build
+xcodebuild -scheme PiHoleControlsiOS -destination "generic/platform=iOS Simulator" build CODE_SIGNING_ALLOWED=NO
+
 # Run unit tests only
 xcodebuild test -scheme PiHoleControls -destination "platform=macOS" -only-testing:PiHoleControlsTests
 
@@ -27,7 +36,8 @@ xcodebuild test -scheme PiHoleControls -destination "platform=macOS" -only-testi
 ./scripts/release.sh --upload
 ```
 
-Requires Xcode 15+ and macOS 14+.
+Requires Xcode 26.1+ and macOS 26.1+ for the macOS app target. PiHoleKit separately
+supports macOS 14+ and iOS 17+. The iOS target is a scaffold, not a finished app.
 
 ## Architecture Overview
 
@@ -43,7 +53,11 @@ macOS menu bar app that controls Pi-hole DNS blocking. Supports both Pi-hole v5 
 
 **ContentView** (`ContentView.swift`) — SwiftUI popover with sliding navigation between status and settings views. Fixed 300pt width. Uses `HeightReader` to animate height transitions between views. Popover dismissal is threaded through a custom `dismissMenu` SwiftUI `EnvironmentKey`.
 
-**SettingsView** (`SettingsView.swift`) — Standalone SwiftUI settings window (opened via macOS Settings menu). Contains connection test that calls `fetchStatus(allowLegacyFallback: false)` to verify v6 connectivity.
+**SettingsView** (`SettingsView.swift`) — Standalone SwiftUI settings window (opened via macOS Settings menu). Connection testing uses the store and supports both v6 and the v5 fallback.
+
+**PiHoleKit** (`PiHoleKit/Sources/PiHoleKit/`) contains the shared client, protocol,
+session cache, Keychain helper, summary, and server configuration. Do not recreate
+these types inside the app target after the package extraction.
 
 ### Data Flow
 
@@ -59,7 +73,16 @@ Hybrid AppKit + SwiftUI. The menu bar icon is pure AppKit (`NSStatusItem` + cust
 
 ### Testing
 
-Tests use **Swift Testing** framework (`import Testing`, `@Test`, `@Suite`, `#expect`), not XCTest. The `PiHoleClientProtocol` enables mock injection — `MockPiHoleClient` tracks call counts and configurable responses. `PiHoleStore` accepts a `clientFactory` closure to swap in mocks. Tests use `Task.sleep` to wait for async operations.
+Unit tests use **Swift Testing** (`import Testing`, `@Test`, `@Suite`, `#expect`);
+UI tests use XCTest. Store tests inject a mock client, unique UserDefaults suite,
+in-memory TokenStorage, disabled network monitoring, and a clock when needed.
+Await the returned operation task rather than sleeping. API tests use URLProtocol
+fixtures. Never use production preferences or the production Keychain account in
+tests. App startup is isolated under XCTest and `--ui-testing`.
+
+Pi-hole owns timed-disable expiry. Countdown expiry only refreshes status; it must
+not send an enable mutation. Requests capture their configuration identity so old
+results cannot overwrite a new server's UI state.
 
 ### API Token Storage
 

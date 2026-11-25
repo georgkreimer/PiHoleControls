@@ -1,22 +1,15 @@
-//
-//  KeychainHelper.swift
-//  PiHoleControls
-//
-//  Secure storage for API tokens using macOS Keychain
-//
-
 import Foundation
 import Security
 
-enum KeychainHelper {
+public enum KeychainHelper {
     private static let service = "com.littleappventures.PiHoleControls"
-    
-    enum KeychainError: LocalizedError {
+
+    public enum KeychainError: LocalizedError {
         case duplicateItem
         case itemNotFound
         case unexpectedStatus(OSStatus)
-        
-        var errorDescription: String? {
+
+        public var errorDescription: String? {
             switch self {
             case .duplicateItem:
                 return "Item already exists in Keychain"
@@ -27,36 +20,35 @@ enum KeychainHelper {
             }
         }
     }
-    
-    /// Save a string value to the Keychain using atomic update-or-insert pattern
-    static func save(key: String, value: String) throws {
-        // Empty value means delete from Keychain
+
+    public static func save(key: String, value: String, accessGroup: String? = nil) throws {
         if value.isEmpty {
-            try? delete(key: key)
+            try? delete(key: key, accessGroup: accessGroup)
             return
         }
 
         guard let data = value.data(using: .utf8) else { return }
 
-        let query: [String: Any] = [
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key
         ]
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
 
         let updateAttributes: [String: Any] = [
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
         ]
 
-        // Try update first (atomic operation)
         let updateStatus = SecItemUpdate(query as CFDictionary, updateAttributes as CFDictionary)
 
         if updateStatus == errSecSuccess {
             return
         }
 
-        // Item doesn't exist, add it (atomic operation)
         if updateStatus == errSecItemNotFound {
             var addQuery = query
             addQuery[kSecValueData as String] = data
@@ -71,39 +63,43 @@ enum KeychainHelper {
 
         throw KeychainError.unexpectedStatus(updateStatus)
     }
-    
-    /// Retrieve a string value from the Keychain
-    static func retrieve(key: String) -> String? {
-        let query: [String: Any] = [
+
+    public static func retrieve(key: String, accessGroup: String? = nil) -> String? {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
-        
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+
         var result: AnyObject?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        
+
         guard status == errSecSuccess,
               let data = result as? Data,
               let string = String(data: data, encoding: .utf8) else {
             return nil
         }
-        
+
         return string
     }
-    
-    /// Delete a value from the Keychain
-    static func delete(key: String) throws {
-        let query: [String: Any] = [
+
+    public static func delete(key: String, accessGroup: String? = nil) throws {
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: key
         ]
-        
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+
         let status = SecItemDelete(query as CFDictionary)
-        
+
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainError.unexpectedStatus(status)
         }

@@ -1,11 +1,6 @@
-//
-//  PiHoleSessionCacheTests.swift
-//  PiHoleControlsTests
-//
-
 import Testing
 import Foundation
-@testable import PiHoleControls
+@testable import PiHoleKit
 
 @Suite("PiHoleSessionCache Tests")
 struct PiHoleSessionCacheTests {
@@ -44,7 +39,7 @@ struct PiHoleSessionCacheTests {
         #expect(result == nil)
     }
 
-    @Test("Set overwrites previous session")
+    @Test("Set overwrites previous session for same key")
     func setOverwrites() async {
         let cache = makeCache()
         let session1 = PiHoleSessionCache.Session(sid: "first", csrf: nil)
@@ -57,8 +52,8 @@ struct PiHoleSessionCacheTests {
         #expect(result?.sid == "second")
     }
 
-    @Test("Set with different key replaces previous entry")
-    func setDifferentKey() async {
+    @Test("Different keys store independent sessions")
+    func differentKeysIndependent() async {
         let cache = makeCache()
         let session1 = PiHoleSessionCache.Session(sid: "first", csrf: nil)
         let session2 = PiHoleSessionCache.Session(sid: "second", csrf: nil)
@@ -66,7 +61,7 @@ struct PiHoleSessionCacheTests {
         await cache.set(session1, key: "key-a")
         await cache.set(session2, key: "key-b")
 
-        #expect(await cache.get(key: "key-a") == nil)
+        #expect(await cache.get(key: "key-a")?.sid == "first")
         #expect(await cache.get(key: "key-b")?.sid == "second")
     }
 

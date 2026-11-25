@@ -1,19 +1,13 @@
-//
-//  PiHoleClient.swift
-//  PiHoleControls
-//
-//  Created by Georg Kreimer on 11/25/25.
-//
-
 import Foundation
 import CryptoKit
 
-struct PiHoleClient {
-    let baseURL: URL
-    let token: String
-    let allowSelfSignedCert: Bool
+public struct PiHoleClient: Sendable {
+    public let baseURL: URL
+    public let token: String
+    public let allowSelfSignedCert: Bool
+    private let session: URLSession?
 
-    enum PiHoleError: Error {
+    public enum PiHoleError: Error {
         case invalidURL
         case invalidResponse(
             statusCode: Int?,
@@ -24,7 +18,7 @@ struct PiHoleClient {
         case notConfigured
     }
 
-    struct LegacyErrorDiagnostics: Equatable {
+    public struct LegacyErrorDiagnostics: Equatable, Sendable {
         let method: String
         let endpoint: String
         let statusCode: Int
@@ -110,14 +104,14 @@ struct PiHoleClient {
         return session
     }
 
-    /// Returns a session auth if available/creatable. Never throws; callers should fall back to other auth modes.
-    private func sessionAuthIfPossible(forceRefresh: Bool = false) async -> SessionAuth? {
+    /// Only unsupported session authentication permits another authentication mode.
+    private func sessionAuthIfPossible(forceRefresh: Bool = false) async throws -> SessionAuth? {
         if !forceRefresh, let cached = await cachedSession() {
             return cached
         }
         do {
             return try await createAndCacheSessionAuth()
-        } catch {
+        } catch let PiHoleError.invalidResponse(code, _, _, _) where [401, 403, 404, 405].contains(code ?? 0) {
             return nil
         }
     }
@@ -133,7 +127,7 @@ struct PiHoleClient {
         method: String = "GET",
         jsonBody: [String: Any]? = nil
     ) async throws -> (Data, HTTPURLResponse) {
-        guard let session = await sessionAuthIfPossible() else {
+        guard let session = try await sessionAuthIfPossible() else {
             let (data, response) = try await sendRequest(
                 path: path,
                 queryItems: queryItems,
@@ -158,7 +152,7 @@ struct PiHoleClient {
 
         // Session likely expired/invalid. Clear cache and try to re-auth once.
         await invalidateCachedSession()
-        guard let refreshed = await sessionAuthIfPossible(forceRefresh: true) else {
+        guard let refreshed = try await sessionAuthIfPossible(forceRefresh: true) else {
             return (data1, response1)
         }
 
@@ -172,7 +166,7 @@ struct PiHoleClient {
         return (data2, response2)
     }
 
-    init?(host: String, token: String, allowSelfSignedCert: Bool = false) {
+    public init?(host: String, token: String, allowSelfSignedCert: Bool = false, session: URLSession? = nil) {
         guard !host.isEmpty, !token.isEmpty else { return nil }
         let hostString = host
         let hasScheme = hostString.hasPrefix("http://") || hostString.hasPrefix("https://")
@@ -199,6 +193,7 @@ struct PiHoleClient {
         self.baseURL = sanitizedURL
         self.token = token
         self.allowSelfSignedCert = allowSelfSignedCert
+        self.session = session
     }
 
     /// Build and send a request with flexible auth modes (Bearer header, Token header, or query token).
@@ -210,6 +205,7 @@ struct PiHoleClient {
         method: String = "GET",
         jsonBody: [String: Any]? = nil
     ) async throws -> (Data, HTTPURLResponse) {
+        try Task.checkCancellation()
         let url = baseURL.appendingPathComponent(path)
 
         guard
@@ -234,6 +230,7 @@ struct PiHoleClient {
         guard let finalURL = comps.url else { throw PiHoleError.invalidURL }
 
         var request = URLRequest(url: finalURL)
+        request.httpShouldHandleCookies = false
         request.httpMethod = method
         switch authMode {
         case .bearer:
@@ -398,7 +395,7 @@ struct PiHoleClient {
         var lastAuthError: PiHoleError?
 
         // Prefer session if available (works with app passwords), with one re-auth retry.
-        if await sessionAuthIfPossible() != nil {
+        if try await sessionAuthIfPossible() != nil {
             let (data, response) = try await sendRequestWithSessionRetry(
                 path: path, queryItems: queryItems, method: method, jsonBody: jsonBody)
             if response.statusCode != 401 && response.statusCode != 403 {
@@ -431,30 +428,14 @@ struct PiHoleClient {
             statusCode: nil, bodyPreview: nil, endpoint: path, diagnostics: nil)
     }
 
-    /// Tries multiple endpoint/method combos with auth fallback. Returns true if any succeeds (2xx).
-    private func performV6Mutation(
-        attempts: [(path: String, method: String, body: [String: Any]?)]
-    ) async throws -> Bool {
-        var lastError: PiHoleError?
-        for attempt in attempts {
-            do {
-                let (data, response) = try await requestV6WithAuthFallback(
-                    path: attempt.path, method: attempt.method, jsonBody: attempt.body)
-                if (200...204).contains(response.statusCode) { return true }
-                lastError = .invalidResponse(
-                    statusCode: response.statusCode,
-                    bodyPreview: bodyPreview(from: data),
-                    endpoint: attempt.path,
-                    diagnostics: nil
-                )
-            } catch let err as PiHoleError {
-                lastError = err
-            } catch {
-                continue
-            }
+    private func setBlockingV6(enabled: Bool, durationSeconds: Int? = nil) async throws {
+        let (data, response) = try await requestV6WithAuthFallback(
+            path: "api/dns/blocking", method: "POST",
+            jsonBody: ["blocking": enabled, "timer": durationSeconds.map { $0 as Any } ?? NSNull()])
+        guard response.statusCode == 200, decodeV6Status(from: data) == enabled else {
+            throw PiHoleError.invalidResponse(statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data), endpoint: "api/dns/blocking", diagnostics: nil)
         }
-        if let err = lastError { throw err }
-        return false
     }
 
     private func fetchStatusV6() async throws -> Bool? {
@@ -476,30 +457,11 @@ struct PiHoleClient {
         )
     }
 
-    private func enableV6() async throws -> Bool {
-        let payload: [String: Any] = ["status": "enabled", "blocking": true]
-        return try await performV6Mutation(attempts: [
-            ("api/dns/blocking", "POST", payload),
-            ("api/dns/blocking", "PUT", payload),
-            ("api/dns/blocking/enable", "POST", nil),
-        ])
-    }
-
-    private func disableV6(durationSeconds: Int?) async throws -> Bool {
-        var payload: [String: Any] = ["status": "disabled", "blocking": false]
-        if let durationSeconds { payload["duration"] = durationSeconds }
-        return try await performV6Mutation(attempts: [
-            ("api/dns/blocking", "POST", payload),
-            ("api/dns/blocking", "PUT", payload),
-            ("api/dns/blocking/disable", "POST", durationSeconds.map { ["duration": $0] }),
-        ])
-    }
-
-    /// Cache of host-scoped sessions so we don't create a new URLSession per request.
-    private static var selfSignedSessions: [String: URLSession] = [:]
+    private static nonisolated(unsafe) var selfSignedSessions: [String: URLSession] = [:]
     private static let sessionLock = NSLock()
 
     private func urlSession() -> URLSession {
+        if let session { return session }
         guard allowSelfSignedCert, let host = baseURL.host else { return .shared }
         Self.sessionLock.lock()
         defer { Self.sessionLock.unlock() }
@@ -514,7 +476,7 @@ struct PiHoleClient {
         return session
     }
 
-    func fetchStatus(allowLegacyFallback: Bool = true) async throws -> Bool {
+    public func fetchStatus(allowLegacyFallback: Bool = true) async throws -> Bool {
         // v6 first
         do {
             if let v6 = try await fetchStatusV6() {
@@ -554,10 +516,11 @@ struct PiHoleClient {
         }
     }
 
-    func enableBlocking() async throws {
+    public func enableBlocking() async throws {
         // v6 first; only fall back to legacy on 404 (endpoint missing)
         do {
-            if try await enableV6() { return }
+            try await setBlockingV6(enabled: true)
+            return
         } catch let err as PiHoleError {
             if case .invalidResponse(let statusCode, _, _, _) = err, statusCode == 404 {
                 // v6 endpoint missing, fall through to legacy
@@ -567,13 +530,16 @@ struct PiHoleClient {
         }
 
         // Legacy v5 fallback
-        let (_, response) = try await requestLegacy(
+        let (data, response) = try await requestLegacy(
             queryItems: [
                 URLQueryItem(name: "enable", value: nil)
             ],
             action: .enableBlocking
         )
-        guard response.statusCode == 200 else {
+        struct Status: Decodable { let status: String }
+        guard response.statusCode == 200,
+              let confirmation = try? JSONDecoder().decode(Status.self, from: data),
+              confirmation.status.lowercased() == "enabled" else {
             throw PiHoleError.invalidResponse(
                 statusCode: response.statusCode,
                 bodyPreview: nil,
@@ -586,10 +552,11 @@ struct PiHoleClient {
         }
     }
 
-    func disableBlocking(durationSeconds: Int? = nil) async throws {
+    public func disableBlocking(durationSeconds: Int? = nil) async throws {
         // v6 first; only fall back to legacy on 404 (endpoint missing)
         do {
-            if try await disableV6(durationSeconds: durationSeconds) { return }
+            try await setBlockingV6(enabled: false, durationSeconds: durationSeconds)
+            return
         } catch let err as PiHoleError {
             if case .invalidResponse(let statusCode, _, _, _) = err, statusCode == 404 {
                 // v6 endpoint missing, fall through to legacy
@@ -605,8 +572,11 @@ struct PiHoleClient {
         } else {
             items = [URLQueryItem(name: "disable", value: nil)]
         }
-        let (_, response) = try await requestLegacy(queryItems: items, action: .disableBlocking)
-        guard response.statusCode == 200 else {
+        let (data, response) = try await requestLegacy(queryItems: items, action: .disableBlocking)
+        struct Status: Decodable { let status: String }
+        guard response.statusCode == 200,
+              let confirmation = try? JSONDecoder().decode(Status.self, from: data),
+              confirmation.status.lowercased() == "disabled" else {
             throw PiHoleError.invalidResponse(
                 statusCode: response.statusCode,
                 bodyPreview: nil,
@@ -618,10 +588,94 @@ struct PiHoleClient {
             )
         }
     }
+    public func fetchSummary() async throws -> PiHoleSummary {
+        // v6 first
+        do {
+            return try await fetchSummaryV6()
+        } catch let err as PiHoleError {
+            if case .invalidResponse(let statusCode, _, _, _) = err, statusCode == 404 {
+                // v6 endpoint missing, fall through to legacy
+            } else {
+                throw err
+            }
+        }
+
+        // Legacy v5 fallback
+        let (data, response) = try await requestLegacy(
+            queryItems: [URLQueryItem(name: "summaryRaw", value: nil)],
+            action: .statusRefresh
+        )
+        guard response.statusCode == 200 else {
+            throw PiHoleError.invalidResponse(
+                statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data),
+                endpoint: "admin/api.php",
+                diagnostics: nil
+            )
+        }
+
+        struct LegacySummary: Decodable {
+            let dns_queries_today: Int
+            let ads_blocked_today: Int
+            let ads_percentage_today: Double
+        }
+
+        guard let decoded = try? JSONDecoder().decode(LegacySummary.self, from: data) else {
+            throw PiHoleError.invalidResponse(
+                statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data),
+                endpoint: "admin/api.php",
+                diagnostics: nil
+            )
+        }
+
+        return PiHoleSummary(
+            queriesToday: decoded.dns_queries_today,
+            blockedToday: decoded.ads_blocked_today,
+            blockPercentage: decoded.ads_percentage_today
+        )
+    }
+
+    private func fetchSummaryV6() async throws -> PiHoleSummary {
+        let (data, response) = try await requestV6WithAuthFallback(path: "api/stats/summary")
+        guard response.statusCode == 200 else {
+            throw PiHoleError.invalidResponse(
+                statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data),
+                endpoint: "api/stats/summary",
+                diagnostics: nil
+            )
+        }
+
+        struct V6Queries: Decodable {
+            let total: Int
+            let blocked: Int
+            let percent_blocked: Double
+        }
+        struct V6Summary: Decodable {
+            let queries: V6Queries?
+        }
+
+        guard let decoded = try? JSONDecoder().decode(V6Summary.self, from: data),
+              let queries = decoded.queries else {
+            throw PiHoleError.invalidResponse(
+                statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data),
+                endpoint: "api/stats/summary",
+                diagnostics: nil
+            )
+        }
+
+        return PiHoleSummary(
+            queriesToday: queries.total,
+            blockedToday: queries.blocked,
+            blockPercentage: queries.percent_blocked
+        )
+    }
 }
 
 /// Accepts self-signed certs only for the specified Pi-hole host. All other hosts use default validation.
-private final class HostScopedSelfSignedCertDelegate: NSObject, URLSessionDelegate {
+private final class HostScopedSelfSignedCertDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
     private let allowedHost: String
 
     init(allowedHost: String) {
@@ -642,14 +696,14 @@ private final class HostScopedSelfSignedCertDelegate: NSObject, URLSessionDelega
 }
 
 extension PiHoleClient.PiHoleError {
-    var legacyDiagnostics: PiHoleClient.LegacyErrorDiagnostics? {
+    public var legacyDiagnostics: PiHoleClient.LegacyErrorDiagnostics? {
         if case .invalidResponse(_, _, _, let diagnostics) = self {
             return diagnostics
         }
         return nil
     }
 
-    var isLegacyServerError: Bool {
+    public var isLegacyServerError: Bool {
         guard let diagnostics = legacyDiagnostics else { return false }
         return diagnostics.endpoint == "admin/api.php" && diagnostics.statusCode == 500
     }

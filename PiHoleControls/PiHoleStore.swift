@@ -2,23 +2,36 @@ import Foundation
 import SwiftUI
 import Combine
 import Network
+import PiHoleKit
 
 @MainActor
 final class PiHoleStore: ObservableObject {
     /// Factory closure type for creating Pi-hole clients
     typealias ClientFactory = (String, String, Bool) -> (any PiHoleClientProtocol)?
 
-    // Settings (host stays in AppStorage, token moves to Keychain)
-    @AppStorage("piholeHost") var host: String = ""
-    @AppStorage("allowSelfSignedCert") var allowSelfSignedCert: Bool = false
-    @AppStorage("defaultDisableMinutes") var defaultDisableMinutes: Int = 5
+    @Published var host: String {
+        didSet {
+            defaults.set(host, forKey: "piholeHost")
+            if oldValue != host { configurationDidChange() }
+        }
+    }
+    @Published var allowSelfSignedCert: Bool {
+        didSet {
+            defaults.set(allowSelfSignedCert, forKey: "allowSelfSignedCert")
+            if oldValue != allowSelfSignedCert { configurationDidChange() }
+        }
+    }
+    @Published var defaultDisableMinutes: Int {
+        didSet { defaults.set(defaultDisableMinutes, forKey: "defaultDisableMinutes") }
+    }
 
     // Token with Keychain backing
-    private static let tokenKeychainKey = "piholeAPIToken"
     @Published var token: String = "" {
         didSet {
             if oldValue != token {
-                try? KeychainHelper.save(key: Self.tokenKeychainKey, value: token)
+                configurationDidChange()
+                do { try tokenStorage.save(token) }
+                catch { lastError = "Could not save API token: \(error.localizedDescription)" }
             }
         }
     }
@@ -34,10 +47,10 @@ final class PiHoleStore: ObservableObject {
     private var refreshTask: Task<Void, Never>?
     private var followUpRefreshTask: Task<Void, Never>?
     private var countdownTimer: Timer?
+    private var disableDeadline: Date?
     private let refreshIntervalSeconds: TimeInterval = 20
 
     // Retry configuration (baseRetryDelay injectable for testing)
-    private let maxRetryAttempts = 3
     let baseRetryDelay: TimeInterval
 
     // Network monitoring
@@ -48,6 +61,10 @@ final class PiHoleStore: ObservableObject {
 
     // Dependency injection for testing
     private let makeClientFn: ClientFactory
+    private let defaults: UserDefaults
+    private let tokenStorage: TokenStorage
+    private let now: () -> Date
+    private var configurationID = UUID()
 
     var isConfigured: Bool { !host.isEmpty && !token.isEmpty }
 
@@ -56,12 +73,21 @@ final class PiHoleStore: ObservableObject {
         PiHoleClient(host: host, token: token, allowSelfSignedCert: allowSelfSigned)
     }
 
-    init(clientFactory: ClientFactory? = nil, baseRetryDelay: TimeInterval = 1.0) {
+    init(clientFactory: ClientFactory? = nil, baseRetryDelay: TimeInterval = 1.0,
+         defaults: UserDefaults = .standard, tokenStorage: TokenStorage? = nil,
+         monitorNetwork: Bool = true, now: @escaping () -> Date = Date.init) {
+        let tokenStorage = tokenStorage ?? .keychain
         self.makeClientFn = clientFactory ?? Self.defaultClientFactory
         self.baseRetryDelay = baseRetryDelay
+        self.defaults = defaults
+        self.tokenStorage = tokenStorage
+        self.now = now
+        host = defaults.string(forKey: "piholeHost") ?? ""
+        allowSelfSignedCert = defaults.bool(forKey: "allowSelfSignedCert")
+        defaultDisableMinutes = defaults.object(forKey: "defaultDisableMinutes") as? Int ?? 5
 
         // Load token from Keychain on init
-        if let savedToken = KeychainHelper.retrieve(key: Self.tokenKeychainKey) {
+        if let savedToken = tokenStorage.load() {
             token = savedToken
         }
 
@@ -69,7 +95,7 @@ final class PiHoleStore: ObservableObject {
         migrateTokenFromAppStorage()
 
         // Start network monitoring
-        startNetworkMonitoring()
+        if monitorNetwork { startNetworkMonitoring() }
     }
 
     deinit {
@@ -80,23 +106,32 @@ final class PiHoleStore: ObservableObject {
 
     private func migrateTokenFromAppStorage() {
         // Skip if Keychain already has a token (already migrated or set via UI)
-        if KeychainHelper.retrieve(key: Self.tokenKeychainKey) != nil {
+        if tokenStorage.load() != nil {
             // Clean up old AppStorage key if it exists
-            UserDefaults.standard.removeObject(forKey: "piholeToken")
+            defaults.removeObject(forKey: "piholeToken")
             return
         }
 
         let oldTokenKey = "piholeToken"
-        if let oldToken = UserDefaults.standard.string(forKey: oldTokenKey), !oldToken.isEmpty {
+        if let oldToken = defaults.string(forKey: oldTokenKey), !oldToken.isEmpty {
             // Save to Keychain first, only remove from UserDefaults if save succeeds
             do {
-                try KeychainHelper.save(key: Self.tokenKeychainKey, value: oldToken)
+                try tokenStorage.save(oldToken)
                 token = oldToken
-                UserDefaults.standard.removeObject(forKey: oldTokenKey)
+                defaults.removeObject(forKey: oldTokenKey)
             } catch {
                 // Migration failed - keep old token in UserDefaults for next attempt
             }
         }
+    }
+
+    private func configurationDidChange() {
+        configurationID = UUID()
+        followUpRefreshTask?.cancel()
+        stopDisableCountdown()
+        isBlockingEnabled = nil
+        isLoading = false
+        lastError = nil
     }
 
     // MARK: - Network Monitoring
@@ -177,7 +212,7 @@ final class PiHoleStore: ObservableObject {
             return .failure("Enter a valid host and API token first.")
         }
         do {
-            _ = try await client.fetchStatus(allowLegacyFallback: false)
+            _ = try await client.fetchStatus(allowLegacyFallback: true)
             return .success
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -193,26 +228,30 @@ final class PiHoleStore: ObservableObject {
 
     // MARK: - Public operations (fire-and-forget wrappers for UI)
 
-    func toggleBlocking() {
-        guard !isLoading else { return }
+    @discardableResult
+    func toggleBlocking() -> Task<Void, Never>? {
+        guard !isLoading else { return nil }
         if isBlockingEnabled == true {
-            disableBlocking(durationSeconds: defaultDisableMinutes > 0 ? defaultDisableMinutes * 60 : nil)
+            return disableBlocking(durationSeconds: defaultDisableMinutes > 0 ? defaultDisableMinutes * 60 : nil)
         } else if isBlockingEnabled == false {
-            enableBlocking()
+            return enableBlocking()
         } else {
-            refreshStatus()
+            return refreshStatus()
         }
     }
 
-    func enableBlocking() {
+    @discardableResult
+    func enableBlocking() -> Task<Void, Never> {
         Task { await enableBlockingAsync() }
     }
 
-    func disableBlocking(durationSeconds: Int? = nil) {
+    @discardableResult
+    func disableBlocking(durationSeconds: Int? = nil) -> Task<Void, Never> {
         Task { await disableBlockingAsync(durationSeconds: durationSeconds) }
     }
 
-    func refreshStatus() {
+    @discardableResult
+    func refreshStatus() -> Task<Void, Never> {
         Task { await refreshStatusAsync() }
     }
 
@@ -255,6 +294,7 @@ final class PiHoleStore: ObservableObject {
         var lastError: Error?
         
         for attempt in 0..<maxAttempts {
+            try Task.checkCancellation()
             do {
                 return try await operation()
             } catch {
@@ -262,6 +302,7 @@ final class PiHoleStore: ObservableObject {
                 
                 // Don't retry on configuration errors or if cancelled
                 if error is CancellationError { throw error }
+                if (error as? URLError)?.code == .cancelled { throw error }
                 if case PiHoleClient.PiHoleError.notConfigured = error { throw error }
                 if let apiError = error as? PiHoleClient.PiHoleError, apiError.isLegacyServerError {
                     throw error
@@ -272,7 +313,7 @@ final class PiHoleStore: ObservableObject {
                 
                 // Exponential backoff: 1s, 2s, 4s...
                 let delay = baseRetryDelay * pow(2.0, Double(attempt))
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }
         
@@ -280,49 +321,63 @@ final class PiHoleStore: ObservableObject {
     }
 
     func refreshStatusAsync() async {
+        guard !isLoading else { return }
         guard let client = requireClientOrFail() else { return }
+        let context = configurationID
         setLoading(true)
-        defer { setLoading(false) }
+        defer { if context == configurationID { setLoading(false) } }
 
         do {
             let enabled = try await withRetry {
-                try await client.fetchStatus()
+                guard context == self.configurationID else { throw CancellationError() }
+                return try await client.fetchStatus()
             }
+            guard context == configurationID else { return }
             isBlockingEnabled = enabled
             lastError = nil
             // If enabled, stop countdown; if disabled and we don't know remaining time, leave as is.
             if enabled { stopDisableCountdown() }
         } catch {
+            guard context == configurationID, !Task.isCancelled else { return }
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     func enableBlockingAsync() async {
+        guard !isLoading else { return }
         guard let client = requireClientOrFail() else { return }
+        let context = configurationID
         setLoading(true)
-        defer { setLoading(false) }
+        defer { if context == configurationID { setLoading(false) } }
         do {
             try await withRetry {
+                guard context == self.configurationID else { throw CancellationError() }
                 try await client.enableBlocking()
             }
+            guard context == configurationID else { return }
             isBlockingEnabled = true
             lastError = nil
             stopDisableCountdown()
             // Refresh after a brief delay to ensure status reflects server state.
             scheduleFollowUpRefresh()
         } catch {
+            guard context == configurationID, !Task.isCancelled else { return }
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     func disableBlockingAsync(durationSeconds: Int?) async {
+        guard !isLoading else { return }
         guard let client = requireClientOrFail() else { return }
+        let context = configurationID
         setLoading(true)
-        defer { setLoading(false) }
+        defer { if context == configurationID { setLoading(false) } }
         do {
             try await withRetry {
+                guard context == self.configurationID else { throw CancellationError() }
                 try await client.disableBlocking(durationSeconds: durationSeconds)
             }
+            guard context == configurationID else { return }
             isBlockingEnabled = false
             lastError = nil
             if let seconds = durationSeconds {
@@ -333,6 +388,7 @@ final class PiHoleStore: ObservableObject {
             }
             scheduleFollowUpRefresh()
         } catch {
+            guard context == configurationID, !Task.isCancelled else { return }
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
@@ -370,6 +426,7 @@ final class PiHoleStore: ObservableObject {
         stopDisableCountdown()
         let clampedSeconds = max(0, seconds)
         remainingDisableSeconds = clampedSeconds
+        disableDeadline = now().addingTimeInterval(TimeInterval(clampedSeconds))
 
         guard clampedSeconds > 0 else {
             handleDisableCountdownFinished()
@@ -378,35 +435,30 @@ final class PiHoleStore: ObservableObject {
 
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                guard let remaining = self.remainingDisableSeconds else {
-                    self.stopDisableCountdown()
-                    return
-                }
-
-                if remaining > 1 {
-                    self.remainingDisableSeconds = remaining - 1
-                } else {
-                    self.handleDisableCountdownFinished()
-                }
+                self?.updateDisableCountdown()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         countdownTimer = timer
     }
 
+    func updateDisableCountdown() {
+        guard let disableDeadline else { return }
+        let remaining = max(0, Int(ceil(disableDeadline.timeIntervalSince(now()))))
+        if remaining == 0 { handleDisableCountdownFinished() }
+        else { remainingDisableSeconds = remaining }
+    }
+
     private func handleDisableCountdownFinished() {
+        // The server owns expiry. Never override another client's newer blocking decision.
         stopDisableCountdown()
-        if isBlockingEnabled != true {
-            enableBlocking()
-        } else {
-            refreshStatus()
-        }
+        refreshStatus()
     }
 
     private func stopDisableCountdown() {
         countdownTimer?.invalidate()
         countdownTimer = nil
+        disableDeadline = nil
         remainingDisableSeconds = nil
     }
 }
