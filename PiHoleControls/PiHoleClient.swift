@@ -1,10 +1,3 @@
-//
-//  PiHoleClient.swift
-//  PiHoleControls
-//
-//  Created by Georg Kreimer on 11/25/25.
-//
-
 import Foundation
 import CryptoKit
 
@@ -12,6 +5,7 @@ struct PiHoleClient {
     let baseURL: URL
     let token: String
     let allowSelfSignedCert: Bool
+    private let session: URLSession?
 
     enum PiHoleError: Error {
         case invalidURL
@@ -24,7 +18,7 @@ struct PiHoleClient {
         case notConfigured
     }
 
-    struct LegacyErrorDiagnostics: Equatable {
+    struct LegacyErrorDiagnostics: Equatable, Sendable {
         let method: String
         let endpoint: String
         let statusCode: Int
@@ -110,14 +104,14 @@ struct PiHoleClient {
         return session
     }
 
-    /// Returns a session auth if available/creatable. Never throws; callers should fall back to other auth modes.
-    private func sessionAuthIfPossible(forceRefresh: Bool = false) async -> SessionAuth? {
+    /// Only unsupported session authentication permits another authentication mode.
+    private func sessionAuthIfPossible(forceRefresh: Bool = false) async throws -> SessionAuth? {
         if !forceRefresh, let cached = await cachedSession() {
             return cached
         }
         do {
             return try await createAndCacheSessionAuth()
-        } catch {
+        } catch let PiHoleError.invalidResponse(code, _, _, _) where [401, 403, 404, 405].contains(code ?? 0) {
             return nil
         }
     }
@@ -133,7 +127,7 @@ struct PiHoleClient {
         method: String = "GET",
         jsonBody: [String: Any]? = nil
     ) async throws -> (Data, HTTPURLResponse) {
-        guard let session = await sessionAuthIfPossible() else {
+        guard let session = try await sessionAuthIfPossible() else {
             let (data, response) = try await sendRequest(
                 path: path,
                 queryItems: queryItems,
@@ -158,7 +152,7 @@ struct PiHoleClient {
 
         // Session likely expired/invalid. Clear cache and try to re-auth once.
         await invalidateCachedSession()
-        guard let refreshed = await sessionAuthIfPossible(forceRefresh: true) else {
+        guard let refreshed = try await sessionAuthIfPossible(forceRefresh: true) else {
             return (data1, response1)
         }
 
@@ -172,7 +166,7 @@ struct PiHoleClient {
         return (data2, response2)
     }
 
-    init?(host: String, token: String, allowSelfSignedCert: Bool = false) {
+    init?(host: String, token: String, allowSelfSignedCert: Bool = false, session: URLSession? = nil) {
         guard !host.isEmpty, !token.isEmpty else { return nil }
         let hostString = host
         let hasScheme = hostString.hasPrefix("http://") || hostString.hasPrefix("https://")
@@ -199,6 +193,7 @@ struct PiHoleClient {
         self.baseURL = sanitizedURL
         self.token = token
         self.allowSelfSignedCert = allowSelfSignedCert
+        self.session = session
     }
 
     /// Build and send a request with flexible auth modes (Bearer header, Token header, or query token).
@@ -210,6 +205,7 @@ struct PiHoleClient {
         method: String = "GET",
         jsonBody: [String: Any]? = nil
     ) async throws -> (Data, HTTPURLResponse) {
+        try Task.checkCancellation()
         let url = baseURL.appendingPathComponent(path)
 
         guard
@@ -234,6 +230,7 @@ struct PiHoleClient {
         guard let finalURL = comps.url else { throw PiHoleError.invalidURL }
 
         var request = URLRequest(url: finalURL)
+        request.httpShouldHandleCookies = false
         request.httpMethod = method
         switch authMode {
         case .bearer:
@@ -398,7 +395,7 @@ struct PiHoleClient {
         var lastAuthError: PiHoleError?
 
         // Prefer session if available (works with app passwords), with one re-auth retry.
-        if await sessionAuthIfPossible() != nil {
+        if try await sessionAuthIfPossible() != nil {
             let (data, response) = try await sendRequestWithSessionRetry(
                 path: path, queryItems: queryItems, method: method, jsonBody: jsonBody)
             if response.statusCode != 401 && response.statusCode != 403 {
@@ -431,30 +428,14 @@ struct PiHoleClient {
             statusCode: nil, bodyPreview: nil, endpoint: path, diagnostics: nil)
     }
 
-    /// Tries multiple endpoint/method combos with auth fallback. Returns true if any succeeds (2xx).
-    private func performV6Mutation(
-        attempts: [(path: String, method: String, body: [String: Any]?)]
-    ) async throws -> Bool {
-        var lastError: PiHoleError?
-        for attempt in attempts {
-            do {
-                let (data, response) = try await requestV6WithAuthFallback(
-                    path: attempt.path, method: attempt.method, jsonBody: attempt.body)
-                if (200...204).contains(response.statusCode) { return true }
-                lastError = .invalidResponse(
-                    statusCode: response.statusCode,
-                    bodyPreview: bodyPreview(from: data),
-                    endpoint: attempt.path,
-                    diagnostics: nil
-                )
-            } catch let err as PiHoleError {
-                lastError = err
-            } catch {
-                continue
-            }
+    private func setBlockingV6(enabled: Bool, durationSeconds: Int? = nil) async throws {
+        let (data, response) = try await requestV6WithAuthFallback(
+            path: "api/dns/blocking", method: "POST",
+            jsonBody: ["blocking": enabled, "timer": durationSeconds.map { $0 as Any } ?? NSNull()])
+        guard response.statusCode == 200, decodeV6Status(from: data) == enabled else {
+            throw PiHoleError.invalidResponse(statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data), endpoint: "api/dns/blocking", diagnostics: nil)
         }
-        if let err = lastError { throw err }
-        return false
     }
 
     private func fetchStatusV6() async throws -> Bool? {
@@ -476,116 +457,102 @@ struct PiHoleClient {
         )
     }
 
-    private func enableV6() async throws -> Bool {
-        let payload: [String: Any] = ["status": "enabled", "blocking": true]
-        return try await performV6Mutation(attempts: [
-            ("api/dns/blocking", "POST", payload),
-            ("api/dns/blocking", "PUT", payload),
-            ("api/dns/blocking/enable", "POST", nil),
-        ])
-    }
-
-    private func disableV6(durationSeconds: Int?) async throws -> Bool {
-        var payload: [String: Any] = ["status": "disabled", "blocking": false]
-        if let durationSeconds { payload["duration"] = durationSeconds }
-        return try await performV6Mutation(attempts: [
-            ("api/dns/blocking", "POST", payload),
-            ("api/dns/blocking", "PUT", payload),
-            ("api/dns/blocking/disable", "POST", durationSeconds.map { ["duration": $0] }),
-        ])
-    }
-
     // MARK: - Domain management
 
     func fetchRecentBlocked(count: Int) async throws -> [BlockedQuery] {
-        // Try v6 queries endpoint first
+        guard count > 0 else { return [] }
         do {
             let (data, response) = try await requestV6WithAuthFallback(
                 path: "api/queries", queryItems: [
-                    URLQueryItem(name: "blocked", value: "true"),
+                    URLQueryItem(name: "upstream", value: "blocklist"),
                     URLQueryItem(name: "length", value: "\(count)")
                 ])
-            if response.statusCode == 200 {
-                struct QueryResponse: Decodable {
-                    struct Query: Decodable {
-                        let domain: String?
-                        let time: Double?
-                    }
-                    let queries: [Query]
-                }
-                if let decoded = try? JSONDecoder().decode(QueryResponse.self, from: data) {
-                    let results = decoded.queries.compactMap { q -> BlockedQuery? in
-                        guard let domain = q.domain else { return nil }
-                        let timestamp = q.time.map { Date(timeIntervalSince1970: $0) } ?? Date()
-                        return BlockedQuery(domain: domain, timestamp: timestamp)
-                    }
-                    if !results.isEmpty { return results }
-                }
+            guard response.statusCode == 200 else {
+                throw PiHoleError.invalidResponse(statusCode: response.statusCode,
+                    bodyPreview: bodyPreview(from: data), endpoint: "api/queries", diagnostics: nil)
             }
-        } catch {}
-
-        // Try v6 recent_blocked stats endpoint
-        do {
-            let (data, response) = try await requestV6WithAuthFallback(path: "api/stats/recent_blocked")
-            if response.statusCode == 200 {
-                struct RecentBlocked: Decodable {
-                    struct Entry: Decodable {
-                        let domain: String?
-                        let name: String?
-                        let time: Double?
-                        let timestamp: Double?
-                    }
-                    let blocked: [Entry]?
-                    let recent_blocked: [Entry]?
+            struct QueryResponse: Decodable {
+                struct Query: Decodable {
+                    let domain: String
+                    let status: String
+                    let time: Double?
                 }
-                if let decoded = try? JSONDecoder().decode(RecentBlocked.self, from: data) {
-                    let entries = decoded.blocked ?? decoded.recent_blocked ?? []
-                    let results = entries.prefix(count).compactMap { e -> BlockedQuery? in
-                        guard let domain = e.domain ?? e.name else { return nil }
-                        let ts = (e.time ?? e.timestamp).map { Date(timeIntervalSince1970: $0) } ?? Date()
-                        return BlockedQuery(domain: domain, timestamp: ts)
-                    }
-                    if !results.isEmpty { return results }
-                }
+                let queries: [Query]
             }
-        } catch {}
+            let decoded = try JSONDecoder().decode(QueryResponse.self, from: data)
+            let blockedStatuses: Set<String> = [
+                "GRAVITY", "REGEX", "DENYLIST", "GRAVITY_CNAME", "REGEX_CNAME", "DENYLIST_CNAME",
+                "EXTERNAL_BLOCKED_IP", "EXTERNAL_BLOCKED_NULL", "EXTERNAL_BLOCKED_NXRA",
+                "EXTERNAL_BLOCKED_EDE15", "SPECIAL_DOMAIN", "DBBUSY"
+            ]
+            return Array(decoded.queries.compactMap { query -> BlockedQuery? in
+                guard !query.domain.isEmpty, blockedStatuses.contains(query.status) else { return nil }
+                return BlockedQuery(domain: query.domain, timestamp: query.time.map { Date(timeIntervalSince1970: $0) })
+            }.prefix(count))
+        } catch let PiHoleError.invalidResponse(code, _, _, _) where code == 404 {
+            // Only a missing endpoint permits the less detailed stats fallback.
+        }
 
-        return []
+        let (data, response) = try await requestV6WithAuthFallback(
+            path: "api/stats/recent_blocked", queryItems: [URLQueryItem(name: "count", value: "\(count)")])
+        guard response.statusCode == 200 else {
+            throw PiHoleError.invalidResponse(statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data), endpoint: "api/stats/recent_blocked", diagnostics: nil)
+        }
+        struct RecentBlocked: Decodable { let blocked: [String] }
+        let decoded = try JSONDecoder().decode(RecentBlocked.self, from: data)
+        return decoded.blocked.filter { !$0.isEmpty }.prefix(count).map {
+            BlockedQuery(domain: $0, timestamp: nil)
+        }
     }
 
     func allowDomain(_ domain: String) async throws {
         let (data, response) = try await requestV6WithAuthFallback(
-            path: "api/domains/allow/exact",
-            method: "POST",
-            jsonBody: ["domain": domain])
-        guard (200...204).contains(response.statusCode) else {
-            throw PiHoleError.invalidResponse(
-                statusCode: response.statusCode,
-                bodyPreview: bodyPreview(from: data),
-                endpoint: "api/domains/allow/exact",
-                diagnostics: nil)
+            path: "api/domains/allow/exact", method: "POST", jsonBody: ["domain": domain])
+        struct Insertion: Decodable {
+            struct Processed: Decodable {
+                struct Item: Decodable { let item: String }
+                let success: [Item]
+                let errors: [Item]
+            }
+            let processed: Processed
+        }
+        guard response.statusCode == 201,
+              let result = try? JSONDecoder().decode(Insertion.self, from: data),
+              result.processed.errors.isEmpty,
+              result.processed.success.contains(where: { $0.item.lowercased() == domain.lowercased() }) else {
+            throw PiHoleError.invalidResponse(statusCode: response.statusCode,
+                bodyPreview: bodyPreview(from: data), endpoint: "api/domains/allow/exact", diagnostics: nil)
         }
     }
 
     func removeDomain(_ domain: String) async throws {
-        let encoded = domain.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? domain
-        let (data, response) = try await requestV6WithAuthFallback(
-            path: "api/domains/allow/exact/\(encoded)",
-            method: "DELETE")
-        guard (200...204).contains(response.statusCode) else {
-            throw PiHoleError.invalidResponse(
-                statusCode: response.statusCode,
-                bodyPreview: bodyPreview(from: data),
-                endpoint: "api/domains/allow/exact/\(domain)",
-                diagnostics: nil)
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._")
+        guard !domain.isEmpty, domain.utf8.count <= 253,
+              domain.unicodeScalars.allSatisfy({ allowed.contains($0) }) else { throw PiHoleError.invalidURL }
+        let path = "api/domains/allow/exact/\(domain)"
+        let (data, response) = try await requestV6WithAuthFallback(path: path, method: "DELETE")
+        if response.statusCode == 204 { return }
+        if response.statusCode == 404 {
+            // Distinguish an already-removed entry from an unsupported endpoint.
+            let (checkData, checkResponse) = try await requestV6WithAuthFallback(path: path)
+            struct Lookup: Decodable {
+                struct Domain: Decodable { let domain: String }
+                let domains: [Domain]
+            }
+            if checkResponse.statusCode == 200,
+               let lookup = try? JSONDecoder().decode(Lookup.self, from: checkData),
+               lookup.domains.isEmpty { return }
         }
+        throw PiHoleError.invalidResponse(statusCode: response.statusCode,
+            bodyPreview: bodyPreview(from: data), endpoint: path, diagnostics: nil)
     }
 
-    /// Cache of host-scoped sessions so we don't create a new URLSession per request.
-    private static var selfSignedSessions: [String: URLSession] = [:]
+    private static nonisolated(unsafe) var selfSignedSessions: [String: URLSession] = [:]
     private static let sessionLock = NSLock()
 
     private func urlSession() -> URLSession {
+        if let session { return session }
         guard allowSelfSignedCert, let host = baseURL.host else { return .shared }
         Self.sessionLock.lock()
         defer { Self.sessionLock.unlock() }
@@ -643,7 +610,8 @@ struct PiHoleClient {
     func enableBlocking() async throws {
         // v6 first; only fall back to legacy on 404 (endpoint missing)
         do {
-            if try await enableV6() { return }
+            try await setBlockingV6(enabled: true)
+            return
         } catch let err as PiHoleError {
             if case .invalidResponse(let statusCode, _, _, _) = err, statusCode == 404 {
                 // v6 endpoint missing, fall through to legacy
@@ -653,13 +621,16 @@ struct PiHoleClient {
         }
 
         // Legacy v5 fallback
-        let (_, response) = try await requestLegacy(
+        let (data, response) = try await requestLegacy(
             queryItems: [
                 URLQueryItem(name: "enable", value: nil)
             ],
             action: .enableBlocking
         )
-        guard response.statusCode == 200 else {
+        struct Status: Decodable { let status: String }
+        guard response.statusCode == 200,
+              let confirmation = try? JSONDecoder().decode(Status.self, from: data),
+              confirmation.status.lowercased() == "enabled" else {
             throw PiHoleError.invalidResponse(
                 statusCode: response.statusCode,
                 bodyPreview: nil,
@@ -675,7 +646,8 @@ struct PiHoleClient {
     func disableBlocking(durationSeconds: Int? = nil) async throws {
         // v6 first; only fall back to legacy on 404 (endpoint missing)
         do {
-            if try await disableV6(durationSeconds: durationSeconds) { return }
+            try await setBlockingV6(enabled: false, durationSeconds: durationSeconds)
+            return
         } catch let err as PiHoleError {
             if case .invalidResponse(let statusCode, _, _, _) = err, statusCode == 404 {
                 // v6 endpoint missing, fall through to legacy
@@ -691,8 +663,11 @@ struct PiHoleClient {
         } else {
             items = [URLQueryItem(name: "disable", value: nil)]
         }
-        let (_, response) = try await requestLegacy(queryItems: items, action: .disableBlocking)
-        guard response.statusCode == 200 else {
+        let (data, response) = try await requestLegacy(queryItems: items, action: .disableBlocking)
+        struct Status: Decodable { let status: String }
+        guard response.statusCode == 200,
+              let confirmation = try? JSONDecoder().decode(Status.self, from: data),
+              confirmation.status.lowercased() == "disabled" else {
             throw PiHoleError.invalidResponse(
                 statusCode: response.statusCode,
                 bodyPreview: nil,
@@ -704,10 +679,11 @@ struct PiHoleClient {
             )
         }
     }
+
 }
 
 /// Accepts self-signed certs only for the specified Pi-hole host. All other hosts use default validation.
-private final class HostScopedSelfSignedCertDelegate: NSObject, URLSessionDelegate {
+private final class HostScopedSelfSignedCertDelegate: NSObject, URLSessionDelegate, @unchecked Sendable {
     private let allowedHost: String
 
     init(allowedHost: String) {
@@ -743,7 +719,7 @@ extension PiHoleClient.PiHoleError {
 
 // MARK: - Error descriptions for UI
 extension PiHoleClient.PiHoleError: LocalizedError {
-    public var errorDescription: String? {
+    var errorDescription: String? {
         switch self {
         case .invalidURL:
             return

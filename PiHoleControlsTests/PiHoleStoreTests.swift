@@ -9,6 +9,14 @@ import Testing
 import Foundation
 @testable import PiHoleControls
 
+private final class TestStorage {
+    let suite = "PiHoleControls.Tests.\(UUID())"
+    var token: String?
+    var now = Date()
+    var defaults: UserDefaults { UserDefaults(suiteName: suite)! }
+    deinit { UserDefaults.standard.removePersistentDomain(forName: suite) }
+}
+
 @MainActor
 @Suite("PiHoleStore Tests")
 struct PiHoleStoreTests {
@@ -17,7 +25,11 @@ struct PiHoleStoreTests {
 
     /// Creates a store with a mock client factory and zero retry delay for fast tests
     private func makeStore(mockClient: MockPiHoleClient) -> PiHoleStore {
-        let store = PiHoleStore(clientFactory: { _, _, _ in mockClient }, baseRetryDelay: 0)
+        let storage = TestStorage()
+        let store = PiHoleStore(clientFactory: { _, _, _ in mockClient }, baseRetryDelay: 0,
+            defaults: storage.defaults,
+            tokenStorage: TokenStorage(load: { storage.token }, save: { storage.token = $0 }),
+            cleanupStorage: .memory, monitorNetwork: false)
         store.host = "http://test.pi.hole"
         store.token = "test-token"
         return store
@@ -102,8 +114,7 @@ struct PiHoleStoreTests {
         let store = makeStore(mockClient: mock)
         store.isBlockingEnabled = true
 
-        store.toggleBlocking()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await store.toggleBlocking()?.value
 
         #expect(mock.disableBlockingCallCount >= 1)
     }
@@ -114,8 +125,7 @@ struct PiHoleStoreTests {
         let store = makeStore(mockClient: mock)
         store.isBlockingEnabled = false
 
-        store.toggleBlocking()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await store.toggleBlocking()?.value
 
         #expect(mock.enableBlockingCallCount >= 1)
     }
@@ -126,8 +136,7 @@ struct PiHoleStoreTests {
         let store = makeStore(mockClient: mock)
         store.isBlockingEnabled = nil
 
-        store.toggleBlocking()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        await store.toggleBlocking()?.value
 
         #expect(mock.fetchStatusCallCount >= 1)
         #expect(mock.enableBlockingCallCount == 0)
@@ -203,5 +212,82 @@ struct PiHoleStoreTests {
         // Should not have called anything because loading was true
         #expect(mock.disableBlockingCallCount == 0)
         #expect(mock.enableBlockingCallCount == 0)
+    }
+
+    @Test func connectionTestSupportsLegacy() async {
+        let mock = MockPiHoleClient()
+        let store = makeStore(mockClient: mock)
+        let result = await store.testConnection()
+        guard case .success = result else { Issue.record("Connection failed"); return }
+        #expect(mock.lastAllowLegacyFallback == true)
+    }
+
+    @Test func storesUseIndependentPreferencesAndTokens() {
+        let first = TestStorage()
+        let second = TestStorage()
+        let a = PiHoleStore(defaults: first.defaults,
+            tokenStorage: TokenStorage(load: { first.token }, save: { first.token = $0 }), cleanupStorage: .memory, monitorNetwork: false)
+        let b = PiHoleStore(defaults: second.defaults,
+            tokenStorage: TokenStorage(load: { second.token }, save: { second.token = $0 }), cleanupStorage: .memory, monitorNetwork: false)
+        a.host = "https://first.invalid"
+        a.token = "first-token"
+        b.token = "second-token"
+        a.token = ""
+        #expect(b.host.isEmpty)
+        #expect(second.token == "second-token")
+        #expect(first.defaults.string(forKey: "piholeHost") == "https://first.invalid")
+    }
+
+    @Test func testHostHasNoProductionConfiguration() {
+        #expect(AppDelegate.isTesting)
+        let delegate = AppDelegate()
+        #expect(delegate.store.host.isEmpty)
+        #expect(delegate.store.token.isEmpty)
+    }
+
+    @Test func countdownExpiryDoesNotSendEnable() async {
+        let storage = TestStorage()
+        let mock = MockPiHoleClient()
+        mock.statusToReturn = false
+        let store = PiHoleStore(clientFactory: { _, _, _ in mock }, baseRetryDelay: 0,
+            defaults: storage.defaults,
+            tokenStorage: TokenStorage(load: { storage.token }, save: { storage.token = $0 }),
+            cleanupStorage: .memory, monitorNetwork: false, now: { storage.now })
+        store.host = "https://first.invalid"
+        store.token = "fixture"
+        await store.disableBlockingAsync(durationSeconds: 300)
+        storage.now.addTimeInterval(301)
+        store.updateDisableCountdown()
+        await store.refreshStatus().value
+        #expect(mock.enableBlockingCallCount == 0)
+        #expect(store.remainingDisableSeconds == nil)
+        store.host = "https://second.invalid"
+        store.updateDisableCountdown()
+        #expect(mock.enableBlockingCallCount == 0)
+        #expect(store.isBlockingEnabled == nil)
+    }
+
+    @Test func staleRefreshCannotOverwriteNewConfiguration() async {
+        let mock = MockPiHoleClient()
+        let store = makeStore(mockClient: mock)
+        var finish: CheckedContinuation<Bool, Never>?
+        var oldRefresh: Task<Void, Never>?
+        await withCheckedContinuation { started in
+            mock.onFetch = {
+                await withCheckedContinuation { continuation in
+                    finish = continuation
+                    started.resume()
+                }
+            }
+            oldRefresh = store.refreshStatus()
+        }
+        store.host = "https://new.invalid"
+        mock.onFetch = nil
+        mock.statusToReturn = false
+        await store.refreshStatusAsync()
+        finish?.resume(returning: true)
+        // Wait for the old task, not a wall-clock delay.
+        await oldRefresh?.value
+        #expect(store.isBlockingEnabled == false)
     }
 }

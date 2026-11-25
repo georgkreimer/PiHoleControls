@@ -29,9 +29,22 @@
 		105596A22ED5FE3300CFAF33 /* PiHoleControlsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PiHoleControlsUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		10CC00012ED6000300000001 /* Exclude Info.plist from resources */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = 1055968A2ED5FE3200CFAF33 /* PiHoleControls */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		1055968D2ED5FE3200CFAF33 /* PiHoleControls */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				10CC00012ED6000300000001 /* Exclude Info.plist from resources */,
+			);
 			path = PiHoleControls;
 			sourceTree = "<group>";
 		};

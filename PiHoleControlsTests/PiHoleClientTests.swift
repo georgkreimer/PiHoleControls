@@ -187,7 +187,7 @@ struct PiHoleClientTests {
 
     @Test("PiHoleClient conforms to PiHoleClientProtocol")
     func protocolConformance() {
-        let client = PiHoleClient(host: "http://pi.hole", token: "tok")
-        #expect(client is (any PiHoleClientProtocol))
+        let client: (any PiHoleClientProtocol)? = PiHoleClient(host: "http://pi.hole", token: "tok")
+        #expect(client != nil)
     }
 }

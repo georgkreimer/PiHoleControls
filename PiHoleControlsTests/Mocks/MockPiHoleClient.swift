@@ -9,10 +9,13 @@ import Foundation
 @testable import PiHoleControls
 
 /// Mock Pi-hole client for unit testing
+@MainActor
 final class MockPiHoleClient: PiHoleClientProtocol {
     // Configurable responses
     var statusToReturn: Bool = true
     var errorToThrow: Error?
+    var onFetch: (() async throws -> Bool)?
+    private(set) var lastAllowLegacyFallback: Bool?
 
     // Call tracking
     private(set) var fetchStatusCallCount = 0
@@ -22,6 +25,8 @@ final class MockPiHoleClient: PiHoleClientProtocol {
 
     func fetchStatus(allowLegacyFallback: Bool) async throws -> Bool {
         fetchStatusCallCount += 1
+        lastAllowLegacyFallback = allowLegacyFallback
+        if let onFetch { return try await onFetch() }
         if let error = errorToThrow {
             throw error
         }
@@ -47,6 +52,7 @@ final class MockPiHoleClient: PiHoleClientProtocol {
     var recentBlockedToReturn: [BlockedQuery] = []
     private(set) var allowedDomains: [String] = []
     private(set) var removedDomains: [String] = []
+    var onRemove: (() async throws -> Void)?
 
     func fetchRecentBlocked(count: Int) async throws -> [BlockedQuery] {
         if let error = errorToThrow { throw error }
@@ -61,6 +67,7 @@ final class MockPiHoleClient: PiHoleClientProtocol {
     func removeDomain(_ domain: String) async throws {
         if let error = errorToThrow { throw error }
         removedDomains.append(domain)
+        try await onRemove?()
     }
 
     // Helper to reset all tracking

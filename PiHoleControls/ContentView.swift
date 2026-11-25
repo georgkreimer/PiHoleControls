@@ -139,6 +139,9 @@ private struct StatusContentView: View {
     let onSettingsTapped: () -> Void
     let onDisable: () -> Void
     @State private var showRecentBlocked = false
+    @State private var cleanupEntry: PiHoleStore.TempAllowEntry?
+    @State private var cleanupServer = ""
+    @State private var showCleanupConfirmation = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -152,7 +155,7 @@ private struct StatusContentView: View {
                 .padding(.bottom, 10)
 
             // Temporary allowlist & recently blocked
-            if store.isBlockingEnabled == true {
+            if store.isBlockingEnabled == true || !store.tempAllowList.isEmpty || store.cleanupError != nil {
                 domainSection
                     .padding(.horizontal, 16)
                     .padding(.bottom, 14)
@@ -307,10 +310,16 @@ private struct StatusContentView: View {
 
     private var domainSection: some View {
         VStack(alignment: .leading, spacing: 8) {
+            Text("New temporary exceptions are disabled. Cleanup retries require this app to be running and the original server to be selected.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let error = store.cleanupError {
+                Text(error).font(.caption).foregroundStyle(.red)
+            }
             // Active temp-allowed domains
             if !store.tempAllowList.isEmpty {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Allowed temporarily")
+                    Text("Pending allowlist cleanup")
                         .font(.system(size: 10, weight: .semibold, design: .rounded))
                         .foregroundStyle(.secondary)
                         .textCase(.uppercase)
@@ -325,17 +334,21 @@ private struct StatusContentView: View {
                                 .lineLimit(1)
                                 .truncationMode(.middle)
                             Spacer()
-                            Text(formatCountdown(entry.remainingSeconds))
+                            Text(entry.server == nil ? "Review" : "Pending")
                                 .font(.system(size: 10, weight: .medium, design: .monospaced))
                                 .foregroundStyle(.secondary)
                             Button {
-                                store.removeTempAllow(entry.domain)
+                                cleanupEntry = entry
+                                cleanupServer = store.cleanupServer ?? ""
+                                showCleanupConfirmation = true
                             } label: {
                                 Image(systemName: "xmark")
                                     .font(.system(size: 8, weight: .bold))
                                     .foregroundStyle(.secondary)
                             }
                             .buttonStyle(.plain)
+                            .disabled(!store.isConfigured || (entry.server != nil && entry.server != store.cleanupServer))
+                            .help(entry.server.map { "Remove from \($0)" } ?? "Confirm the original server and ownership before removal")
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 6)
@@ -400,7 +413,8 @@ private struct StatusContentView: View {
                                         .foregroundStyle(.green)
                                 }
                                 .buttonStyle(.plain)
-                                .help("Temporarily allow this domain")
+                                .disabled(true)
+                                .help("Unavailable until server-side expiry is supported")
                             }
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
@@ -413,16 +427,21 @@ private struct StatusContentView: View {
                 }
             }
         }
+        .alert("Remove allowlist entry?", isPresented: $showCleanupConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Confirm Removal", role: .destructive) {
+                guard let entry = cleanupEntry else { return }
+                let server = cleanupServer
+                Task { await store.confirmTempAllowRemoval(entry, server: server) }
+            }
+        } message: {
+            Text("Remove \(cleanupEntry?.domain ?? "") from \(cleanupServer)? Old records do not prove which server created this entry or whether it was already permanently allowed. Confirm only if this is the original server and you want this entry removed.")
+        }
     }
 
-    private func formatCountdown(_ seconds: Int) -> String {
-        let min = seconds / 60
-        let sec = seconds % 60
-        return String(format: "%d:%02d", min, sec)
-    }
-
-    private func relativeTime(_ date: Date) -> String {
-        let seconds = Int(Date().timeIntervalSince(date))
+    private func relativeTime(_ date: Date?) -> String {
+        guard let date else { return "Time unknown" }
+        let seconds = max(0, Int(Date().timeIntervalSince(date)))
         if seconds < 60 { return "\(seconds)s" }
         if seconds < 3600 { return "\(seconds / 60)m" }
         return "\(seconds / 3600)h"

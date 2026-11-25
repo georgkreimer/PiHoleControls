@@ -13,6 +13,24 @@ A macOS menu bar app to control your Pi-hole server. Quickly enable/disable ad b
 - Launch at login
 - Runs as a menu bar app (no dock icon by default, configurable)
 
+## Parked Temporary-Allowlist Branch
+
+New temporary exceptions are disabled until a server-side expiry mechanism exists.
+The app cannot guarantee deletion while it is crashed, closed, or offline.
+
+Existing entries remain visible under **Pending allowlist cleanup**, including
+expired entries. Old records did not capture server or ownership information, so
+they require explicit confirmation on the original server. Verify that the domain
+was not permanently allowed before confirming removal.
+
+Confirmed removals are journaled atomically under Application Support/PiHoleControls
+before any DELETE request. Failed removals remain pending and retry every 30 seconds
+while the app is running with the original server selected. Missing or corrupt
+records are not silently overwritten. No credentials are stored in the journal.
+
+Recently blocked queries require Pi-hole query logging. The fallback API has no
+timestamps, so the UI displays "Time unknown" rather than inventing a block time.
+
 ## Installation
 
 Download the latest release from the [Releases](../../releases) page, unzip, and drag `PiHoleControls.app` to your Applications folder.
@@ -28,7 +46,7 @@ Download the latest release from the [Releases](../../releases) page, unzip, and
 
 ## Building from Source
 
-Requires Xcode 15+ and macOS 14+.
+Requires Xcode 26.1+ and macOS 26.1+.
 
 ```bash
 # clone the repository

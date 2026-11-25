@@ -8,17 +8,29 @@ final class PiHoleStore: ObservableObject {
     /// Factory closure type for creating Pi-hole clients
     typealias ClientFactory = (String, String, Bool) -> (any PiHoleClientProtocol)?
 
-    // Settings (host stays in AppStorage, token moves to Keychain)
-    @AppStorage("piholeHost") var host: String = ""
-    @AppStorage("allowSelfSignedCert") var allowSelfSignedCert: Bool = false
-    @AppStorage("defaultDisableMinutes") var defaultDisableMinutes: Int = 5
+    @Published var host: String {
+        didSet {
+            defaults.set(host, forKey: "piholeHost")
+            if oldValue != host { configurationDidChange() }
+        }
+    }
+    @Published var allowSelfSignedCert: Bool {
+        didSet {
+            defaults.set(allowSelfSignedCert, forKey: "allowSelfSignedCert")
+            if oldValue != allowSelfSignedCert { configurationDidChange() }
+        }
+    }
+    @Published var defaultDisableMinutes: Int {
+        didSet { defaults.set(defaultDisableMinutes, forKey: "defaultDisableMinutes") }
+    }
 
     // Token with Keychain backing
-    private static let tokenKeychainKey = "piholeAPIToken"
     @Published var token: String = "" {
         didSet {
             if oldValue != token {
-                try? KeychainHelper.save(key: Self.tokenKeychainKey, value: token)
+                configurationDidChange()
+                do { try tokenStorage.save(token) }
+                catch { lastError = "Could not save API token: \(error.localizedDescription)" }
             }
         }
     }
@@ -30,29 +42,115 @@ final class PiHoleStore: ObservableObject {
     @Published var remainingDisableSeconds: Int?
     @Published var isNetworkAvailable: Bool = true
 
-    // Recently blocked domains
-    @Published var recentBlocked: [BlockedQuery] = []
-
-    // Temporary allowlist with crash-safe persistence
     struct TempAllowEntry: Codable, Identifiable, Equatable {
         let domain: String
         let expiresAt: Date
-        var id: String { domain }
-        var isExpired: Bool { Date() >= expiresAt }
-        var remainingSeconds: Int { max(0, Int(expiresAt.timeIntervalSinceNow)) }
+        // Nil for old entries: neither origin nor ownership was recorded.
+        var server: String? = nil
+        var id: String { "\(server ?? "unknown")|\(domain)" }
     }
-    @Published var tempAllowList: [TempAllowEntry] = []
+    @Published var recentBlocked: [BlockedQuery] = []
+    @Published private(set) var tempAllowList: [TempAllowEntry] = []
+    @Published private(set) var cleanupError: String?
+    private let cleanupStorage: CleanupStorage
+    private var cleanupStorageReady = false
+    private var cleanupInFlight: Set<String> = []
     private var tempAllowTimer: Timer?
-    private static let tempAllowKey = "tempAllowList"
+
+    var cleanupServer: String? {
+        PiHoleClient(host: host.trimmingCharacters(in: .whitespacesAndNewlines), token: "identity")?.baseURL.absoluteString
+    }
+
+    func tempAllowDomain(_ domain: String, durationSeconds: Int) {
+        lastError = "New temporary exceptions are disabled until server-side expiry is available."
+    }
+
+    func confirmTempAllowRemoval(_ entry: TempAllowEntry, server: String) async {
+        guard cleanupServer == server, isConfigured, tempAllowList.contains(entry),
+              entry.server == nil || entry.server == server else {
+            cleanupError = "Select the original server before confirming cleanup."
+            return
+        }
+        let confirmed = TempAllowEntry(domain: entry.domain, expiresAt: now(), server: server)
+        let updated = tempAllowList.map { $0 == entry ? confirmed : $0 }
+        guard persistTempAllowList(updated) else { return }
+        await retryTempAllowCleanup()
+    }
+
+    func retryTempAllowCleanup() async {
+        guard cleanupStorageReady, isConfigured, let server = cleanupServer,
+              let client = makeClient() else { return }
+        // Capture the original client before suspension; never redirect a deletion after settings change.
+        for entry in tempAllowList where entry.server == server && entry.expiresAt <= now() {
+            guard cleanupInFlight.insert(entry.id).inserted else { continue }
+            defer { cleanupInFlight.remove(entry.id) }
+            do {
+                try await client.removeDomain(entry.domain)
+                if persistTempAllowList(tempAllowList.filter { $0.id != entry.id }) { cleanupError = nil }
+            } catch {
+                cleanupError = "Cleanup pending for \(entry.domain): \(error.localizedDescription)"
+            }
+        }
+    }
+
+    @discardableResult
+    private func persistTempAllowList(_ entries: [TempAllowEntry]) -> Bool {
+        guard cleanupStorageReady else { return false }
+        do {
+            try cleanupStorage.save(JSONEncoder().encode(entries))
+            tempAllowList = entries
+            return true
+        } catch {
+            cleanupError = "Could not save cleanup records: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func restoreTempAllowList(automaticCleanup: Bool) {
+        do {
+            let saved = try cleanupStorage.load()
+            let legacy = defaults.data(forKey: "tempAllowList")
+            if let data = saved ?? legacy {
+                tempAllowList = try JSONDecoder().decode([TempAllowEntry].self, from: data)
+                // Migrate before removing the only copy, including expired legacy entries.
+                if saved == nil { try cleanupStorage.save(data) }
+            }
+            cleanupStorageReady = true
+            defaults.removeObject(forKey: "tempAllowList")
+            if automaticCleanup && !tempAllowList.isEmpty {
+                Task { [weak self] in await self?.retryTempAllowCleanup() }
+                tempAllowTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+                    Task { @MainActor [weak self] in await self?.retryTempAllowCleanup() }
+                }
+            }
+        } catch {
+            cleanupError = "Could not load cleanup records. Existing records were preserved: \(error.localizedDescription)"
+        }
+    }
+
+    func fetchRecentBlocked() {
+        let context = configurationID
+        guard let client = makeClient() else { return }
+        Task {
+            do {
+                let queries = try await client.fetchRecentBlocked(count: 5)
+                guard context == configurationID else { return }
+                recentBlocked = queries
+            } catch {
+                guard context == configurationID else { return }
+                lastError = error.localizedDescription
+            }
+        }
+    }
 
     // Auto refresh
     private var refreshTask: Task<Void, Never>?
     private var followUpRefreshTask: Task<Void, Never>?
     private var countdownTimer: Timer?
+    private var disableDeadline: Date?
     private let refreshIntervalSeconds: TimeInterval = 20
 
     // Retry configuration (baseRetryDelay injectable for testing)
-    private let maxRetryAttempts = 3
     let baseRetryDelay: TimeInterval
 
     // Network monitoring
@@ -63,6 +161,10 @@ final class PiHoleStore: ObservableObject {
 
     // Dependency injection for testing
     private let makeClientFn: ClientFactory
+    private let defaults: UserDefaults
+    private let tokenStorage: TokenStorage
+    private let now: () -> Date
+    private var configurationID = UUID()
 
     var isConfigured: Bool { !host.isEmpty && !token.isEmpty }
 
@@ -71,23 +173,33 @@ final class PiHoleStore: ObservableObject {
         PiHoleClient(host: host, token: token, allowSelfSignedCert: allowSelfSigned)
     }
 
-    init(clientFactory: ClientFactory? = nil, baseRetryDelay: TimeInterval = 1.0) {
+    init(clientFactory: ClientFactory? = nil, baseRetryDelay: TimeInterval = 1.0,
+         defaults: UserDefaults = .standard, tokenStorage: TokenStorage? = nil,
+         cleanupStorage: CleanupStorage? = nil, automaticCleanup: Bool = true,
+         monitorNetwork: Bool = true, now: @escaping () -> Date = Date.init) {
+        let tokenStorage = tokenStorage ?? .keychain
         self.makeClientFn = clientFactory ?? Self.defaultClientFactory
         self.baseRetryDelay = baseRetryDelay
+        self.defaults = defaults
+        self.tokenStorage = tokenStorage
+        self.now = now
+        self.cleanupStorage = cleanupStorage ?? .file
+        host = defaults.string(forKey: "piholeHost") ?? ""
+        allowSelfSignedCert = defaults.bool(forKey: "allowSelfSignedCert")
+        defaultDisableMinutes = defaults.object(forKey: "defaultDisableMinutes") as? Int ?? 5
 
         // Load token from Keychain on init
-        if let savedToken = KeychainHelper.retrieve(key: Self.tokenKeychainKey) {
+        if let savedToken = tokenStorage.load() {
             token = savedToken
         }
 
         // Migrate from old AppStorage if exists
         migrateTokenFromAppStorage()
 
-        // Restore temp allowlist and clean up expired entries
-        restoreTempAllowList()
+        restoreTempAllowList(automaticCleanup: automaticCleanup)
 
         // Start network monitoring
-        startNetworkMonitoring()
+        if monitorNetwork { startNetworkMonitoring() }
     }
 
     deinit {
@@ -98,23 +210,33 @@ final class PiHoleStore: ObservableObject {
 
     private func migrateTokenFromAppStorage() {
         // Skip if Keychain already has a token (already migrated or set via UI)
-        if KeychainHelper.retrieve(key: Self.tokenKeychainKey) != nil {
+        if tokenStorage.load() != nil {
             // Clean up old AppStorage key if it exists
-            UserDefaults.standard.removeObject(forKey: "piholeToken")
+            defaults.removeObject(forKey: "piholeToken")
             return
         }
 
         let oldTokenKey = "piholeToken"
-        if let oldToken = UserDefaults.standard.string(forKey: oldTokenKey), !oldToken.isEmpty {
+        if let oldToken = defaults.string(forKey: oldTokenKey), !oldToken.isEmpty {
             // Save to Keychain first, only remove from UserDefaults if save succeeds
             do {
-                try KeychainHelper.save(key: Self.tokenKeychainKey, value: oldToken)
+                try tokenStorage.save(oldToken)
                 token = oldToken
-                UserDefaults.standard.removeObject(forKey: oldTokenKey)
+                defaults.removeObject(forKey: oldTokenKey)
             } catch {
                 // Migration failed - keep old token in UserDefaults for next attempt
             }
         }
+    }
+
+    private func configurationDidChange() {
+        configurationID = UUID()
+        recentBlocked = []
+        followUpRefreshTask?.cancel()
+        stopDisableCountdown()
+        isBlockingEnabled = nil
+        isLoading = false
+        lastError = nil
     }
 
     // MARK: - Network Monitoring
@@ -195,7 +317,7 @@ final class PiHoleStore: ObservableObject {
             return .failure("Enter a valid host and API token first.")
         }
         do {
-            _ = try await client.fetchStatus(allowLegacyFallback: false)
+            _ = try await client.fetchStatus(allowLegacyFallback: true)
             return .success
         } catch {
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -209,130 +331,32 @@ final class PiHoleStore: ObservableObject {
             .hasPrefix("http://")
     }
 
-    // MARK: - Temporary domain allowlist
-
-    func tempAllowDomain(_ domain: String, durationSeconds: Int) {
-        Task { await tempAllowDomainAsync(domain, durationSeconds: durationSeconds) }
-    }
-
-    private func tempAllowDomainAsync(_ domain: String, durationSeconds: Int) async {
-        guard let client = makeClient() else { return }
-        do {
-            try await client.allowDomain(domain)
-            let entry = TempAllowEntry(domain: domain, expiresAt: Date().addingTimeInterval(TimeInterval(durationSeconds)))
-            tempAllowList.removeAll { $0.domain == domain }
-            tempAllowList.append(entry)
-            persistTempAllowList()
-            startTempAllowTimer()
-        } catch {
-            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-        }
-    }
-
-    func removeTempAllow(_ domain: String) {
-        Task { await removeTempAllowAsync(domain) }
-    }
-
-    private func removeTempAllowAsync(_ domain: String) async {
-        guard let client = makeClient() else { return }
-        do {
-            try await client.removeDomain(domain)
-        } catch {
-            // Best-effort removal from Pi-hole; always remove from local list
-        }
-        tempAllowList.removeAll { $0.domain == domain }
-        persistTempAllowList()
-    }
-
-    func fetchRecentBlocked() {
-        Task {
-            guard let client = makeClient() else { return }
-            let results = try? await client.fetchRecentBlocked(count: 5)
-            recentBlocked = results ?? []
-        }
-    }
-
-    private func persistTempAllowList() {
-        if let data = try? JSONEncoder().encode(tempAllowList) {
-            UserDefaults.standard.set(data, forKey: Self.tempAllowKey)
-        }
-    }
-
-    private func restoreTempAllowList() {
-        guard let data = UserDefaults.standard.data(forKey: Self.tempAllowKey),
-              let entries = try? JSONDecoder().decode([TempAllowEntry].self, from: data)
-        else { return }
-
-        let (expired, active) = entries.reduce(into: ([TempAllowEntry](), [TempAllowEntry]())) { result, entry in
-            if entry.isExpired {
-                result.0.append(entry)
-            } else {
-                result.1.append(entry)
-            }
-        }
-
-        tempAllowList = active
-        persistTempAllowList()
-
-        // Clean up expired entries from Pi-hole
-        if !expired.isEmpty {
-            Task {
-                guard let client = makeClient() else { return }
-                for entry in expired {
-                    try? await client.removeDomain(entry.domain)
-                }
-            }
-        }
-
-        if !active.isEmpty {
-            startTempAllowTimer()
-        }
-    }
-
-    private func startTempAllowTimer() {
-        tempAllowTimer?.invalidate()
-        tempAllowTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                let now = Date()
-                let expired = self.tempAllowList.filter { now >= $0.expiresAt }
-                if !expired.isEmpty {
-                    for entry in expired {
-                        self.removeTempAllow(entry.domain)
-                    }
-                }
-                // Update published property to refresh countdowns
-                self.objectWillChange.send()
-                if self.tempAllowList.isEmpty {
-                    self.tempAllowTimer?.invalidate()
-                    self.tempAllowTimer = nil
-                }
-            }
-        }
-    }
-
     // MARK: - Public operations (fire-and-forget wrappers for UI)
 
-    func toggleBlocking() {
-        guard !isLoading else { return }
+    @discardableResult
+    func toggleBlocking() -> Task<Void, Never>? {
+        guard !isLoading else { return nil }
         if isBlockingEnabled == true {
-            disableBlocking(durationSeconds: defaultDisableMinutes > 0 ? defaultDisableMinutes * 60 : nil)
+            return disableBlocking(durationSeconds: defaultDisableMinutes > 0 ? defaultDisableMinutes * 60 : nil)
         } else if isBlockingEnabled == false {
-            enableBlocking()
+            return enableBlocking()
         } else {
-            refreshStatus()
+            return refreshStatus()
         }
     }
 
-    func enableBlocking() {
+    @discardableResult
+    func enableBlocking() -> Task<Void, Never> {
         Task { await enableBlockingAsync() }
     }
 
-    func disableBlocking(durationSeconds: Int? = nil) {
+    @discardableResult
+    func disableBlocking(durationSeconds: Int? = nil) -> Task<Void, Never> {
         Task { await disableBlockingAsync(durationSeconds: durationSeconds) }
     }
 
-    func refreshStatus() {
+    @discardableResult
+    func refreshStatus() -> Task<Void, Never> {
         Task { await refreshStatusAsync() }
     }
 
@@ -375,6 +399,7 @@ final class PiHoleStore: ObservableObject {
         var lastError: Error?
         
         for attempt in 0..<maxAttempts {
+            try Task.checkCancellation()
             do {
                 return try await operation()
             } catch {
@@ -382,6 +407,7 @@ final class PiHoleStore: ObservableObject {
                 
                 // Don't retry on configuration errors or if cancelled
                 if error is CancellationError { throw error }
+                if (error as? URLError)?.code == .cancelled { throw error }
                 if case PiHoleClient.PiHoleError.notConfigured = error { throw error }
                 if let apiError = error as? PiHoleClient.PiHoleError, apiError.isLegacyServerError {
                     throw error
@@ -392,7 +418,7 @@ final class PiHoleStore: ObservableObject {
                 
                 // Exponential backoff: 1s, 2s, 4s...
                 let delay = baseRetryDelay * pow(2.0, Double(attempt))
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                try await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             }
         }
         
@@ -400,49 +426,63 @@ final class PiHoleStore: ObservableObject {
     }
 
     func refreshStatusAsync() async {
+        guard !isLoading else { return }
         guard let client = requireClientOrFail() else { return }
+        let context = configurationID
         setLoading(true)
-        defer { setLoading(false) }
+        defer { if context == configurationID { setLoading(false) } }
 
         do {
             let enabled = try await withRetry {
-                try await client.fetchStatus()
+                guard context == self.configurationID else { throw CancellationError() }
+                return try await client.fetchStatus()
             }
+            guard context == configurationID else { return }
             isBlockingEnabled = enabled
             lastError = nil
             // If enabled, stop countdown; if disabled and we don't know remaining time, leave as is.
             if enabled { stopDisableCountdown() }
         } catch {
+            guard context == configurationID, !Task.isCancelled else { return }
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     func enableBlockingAsync() async {
+        guard !isLoading else { return }
         guard let client = requireClientOrFail() else { return }
+        let context = configurationID
         setLoading(true)
-        defer { setLoading(false) }
+        defer { if context == configurationID { setLoading(false) } }
         do {
             try await withRetry {
+                guard context == self.configurationID else { throw CancellationError() }
                 try await client.enableBlocking()
             }
+            guard context == configurationID else { return }
             isBlockingEnabled = true
             lastError = nil
             stopDisableCountdown()
             // Refresh after a brief delay to ensure status reflects server state.
             scheduleFollowUpRefresh()
         } catch {
+            guard context == configurationID, !Task.isCancelled else { return }
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     func disableBlockingAsync(durationSeconds: Int?) async {
+        guard !isLoading else { return }
         guard let client = requireClientOrFail() else { return }
+        let context = configurationID
         setLoading(true)
-        defer { setLoading(false) }
+        defer { if context == configurationID { setLoading(false) } }
         do {
             try await withRetry {
+                guard context == self.configurationID else { throw CancellationError() }
                 try await client.disableBlocking(durationSeconds: durationSeconds)
             }
+            guard context == configurationID else { return }
             isBlockingEnabled = false
             lastError = nil
             if let seconds = durationSeconds {
@@ -453,6 +493,7 @@ final class PiHoleStore: ObservableObject {
             }
             scheduleFollowUpRefresh()
         } catch {
+            guard context == configurationID, !Task.isCancelled else { return }
             lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
@@ -490,6 +531,7 @@ final class PiHoleStore: ObservableObject {
         stopDisableCountdown()
         let clampedSeconds = max(0, seconds)
         remainingDisableSeconds = clampedSeconds
+        disableDeadline = now().addingTimeInterval(TimeInterval(clampedSeconds))
 
         guard clampedSeconds > 0 else {
             handleDisableCountdownFinished()
@@ -498,35 +540,30 @@ final class PiHoleStore: ObservableObject {
 
         let timer = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self else { return }
-                guard let remaining = self.remainingDisableSeconds else {
-                    self.stopDisableCountdown()
-                    return
-                }
-
-                if remaining > 1 {
-                    self.remainingDisableSeconds = remaining - 1
-                } else {
-                    self.handleDisableCountdownFinished()
-                }
+                self?.updateDisableCountdown()
             }
         }
         RunLoop.main.add(timer, forMode: .common)
         countdownTimer = timer
     }
 
+    func updateDisableCountdown() {
+        guard let disableDeadline else { return }
+        let remaining = max(0, Int(ceil(disableDeadline.timeIntervalSince(now()))))
+        if remaining == 0 { handleDisableCountdownFinished() }
+        else { remainingDisableSeconds = remaining }
+    }
+
     private func handleDisableCountdownFinished() {
+        // The server owns expiry. Never override another client's newer blocking decision.
         stopDisableCountdown()
-        if isBlockingEnabled != true {
-            enableBlocking()
-        } else {
-            refreshStatus()
-        }
+        refreshStatus()
     }
 
     private func stopDisableCountdown() {
         countdownTimer?.invalidate()
         countdownTimer = nil
+        disableDeadline = nil
         remainingDisableSeconds = nil
     }
 }

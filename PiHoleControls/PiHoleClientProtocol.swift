@@ -11,7 +11,7 @@ import Foundation
 struct BlockedQuery: Identifiable, Equatable {
     let id = UUID()
     let domain: String
-    let timestamp: Date
+    let timestamp: Date?
 }
 
 /// Protocol defining the Pi-hole API operations
